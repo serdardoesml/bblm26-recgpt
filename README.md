@@ -7,3 +7,9 @@ Train the `bblm10M-bpe` tokenizer:
 ```bash
 uv run python -m scripts.train_tok --dataset bblm10M.jsonl
 ```
+
+Tokenize the 100M JSONL data to parquet:
+
+```bash
+uv run python -m scripts.tokenize_data --dataset babylm-2024-baby-cosmo-fine-100m-train.jsonl --tokenizer bblm100M-bpe
+```
