@@ -46,13 +46,17 @@ class RecGPTConfig(PretrainedConfig):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-6, use_bias: bool = False):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.zeros(hidden_size)) if use_bias else None
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.rms_norm(x, (x.size(-1),), self.weight, self.eps)
+        x = F.rms_norm(x, (x.size(-1),), self.weight, self.eps)
+        if self.bias is not None:
+            x = x + self.bias
+        return x
 
 
 class RotaryEmbedding(nn.Module):
@@ -106,6 +110,20 @@ class SelfAttention(nn.Module):
         nn.init.zeros_(self.out.weight)
         self.rope = RotaryEmbedding(self.head_dim, config.max_position_embeddings, ROPE_THETA)
 
+        # Gated Attention (https://arxiv.org/pdf/2505.06708)
+        # SDPAHeadwiseGate: per-head sigmoid gate applied to attention output.
+        # Empirically, attention gating should benefit us since we don't use any <|BOS|> token during training,
+        # meaning the model has no attention sinks. GA should reduce the need for attention sinks.
+        self.gate = nn.Linear(config.hidden_size, self.num_heads, bias=True)
+        nn.init.zeros_(self.gate.weight)
+
+        # Since the gated attention paper finds that the model converges toward a more sparse gate,
+        # we initialize the gate bias with 0.0 (so the sigmoid of the bias is 0.5).
+        # 0.5 is right in the middle, not too high to start with default behavior, not too low to enforce sparsity early on.
+        # TODO: Rewrite this comment more clearly
+        # TODO: Re-consider if bias is even necessary
+        nn.init.constant_(self.gate.bias, 0.0)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -131,7 +149,9 @@ class SelfAttention(nn.Module):
         v = v.transpose(1, 2)
 
         y = flex_attention(q, k, v, block_mask=block_mask, kernel_options={"BACKEND": backend})
-        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_size)
+        gate = torch.sigmoid(self.gate(x)).view(batch_size, seq_len, self.num_heads, 1)
+        y = y.transpose(1, 2) * gate
+        y = y.contiguous().view(batch_size, seq_len, hidden_size)
         return self.out(y)
 
 
@@ -191,8 +211,8 @@ class RecGPTForCausalLM(PreTrainedModel):
         # This is the main recursive model idea: a single block is reused at every depth.
         # The norms are depth-specific, but the attention and MLP weights are shared.
         self.block = RecursiveBlock(config)
-        self.attn_norms = nn.ModuleList([RMSNorm(config.hidden_size) for _ in range(config.recursive_depth)])
-        self.mlp_norms = nn.ModuleList([RMSNorm(config.hidden_size) for _ in range(config.recursive_depth)])
+        self.attn_norms = nn.ModuleList([RMSNorm(config.hidden_size, use_bias=True) for _ in range(config.recursive_depth)])
+        self.mlp_norms = nn.ModuleList([RMSNorm(config.hidden_size, use_bias=True) for _ in range(config.recursive_depth)])
         self.final_norm = RMSNorm(config.hidden_size)
 
         self.post_init()
