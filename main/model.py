@@ -16,11 +16,11 @@ class RecGPTConfig(PretrainedConfig):
         self,
         vocab_size: int = 32768,
         hidden_size: int = 640,
-        embedding_size: int = 128, # Allows for factorized embeddings, only makes sense at babylm scale.
+        embedding_size: int = 192, # Allows for factorized embeddings, only makes sense at babylm scale.
         head_dim: int = 64,
         intermediate_size: int = 10240,
         recursive_depth: int = 16,
-        max_position_embeddings: int = 512,
+        max_position_embeddings: int = 256,
         pad_token_id: int = 0, # Padding is determined by segment_ids, this is only used for embeddings/HF metadata.
         tie_word_embeddings: bool = False, # Tied embeddings greatly hurt performance for recursive models.
         **kwargs,

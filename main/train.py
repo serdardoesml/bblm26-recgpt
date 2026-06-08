@@ -21,32 +21,32 @@ class TrainConfig:
     model_config: RecGPTConfig = field(default_factory=RecGPTConfig)
     dataset: str = "bblm10M.parquet"
     tokenizer: str = "bblm10M-bpe"
-    run_name: str = "recgpt"
+    run_name: str = "rec-r16-bblm-10m"
     seed: int = 0
     data_seed: int = 0
 
-    microbatch_tok: int = 16384 # Tokens per microbatch (before grad accumulation) per gpu
-    total_batch_tok: int = 16384 # Tokens per gradient step. Must be a multiple of microbatch_tok * gpu count.
+    microbatch_tok: int = 32768 # Tokens per microbatch (before grad accumulation) per gpu
+    total_batch_tok: int = 32768 # Tokens per gradient step. Must be a multiple of microbatch_tok * gpu count.
     sequence_len: int = 512
-    epochs: int = 1
+    epochs: int = 10
 
     # Token limit (per epoch), -1 means use the entire dataset.
     # Note: Don't use this for multi epoch training on a subset, as each epoch will see a different subset of the data due to shuffling.
     max_tokens: int = -1 
 
-    lr_embed: float = 0.007
+    lr_embed: float = 0.005
     lr_block: float = 0.02
     min_lr_embed: float = 0.0
     min_lr_block: float = 0.0
     wd_adam: float = 0.005
     wd_muon: float = 0.1
     warmup_steps: int = 50
-    cooldown_steps: int = 400
+    cooldown_steps: int = 800
     max_grad_norm: float = 2.0
 
     torch_compile: bool = True
     use_wandb: bool = False
-    wandb_project: str = "bblm26-recgpt"
+    wandb_project: str = "recursive_lm"
     log_every: int = 10
     save_dir: str = "models"
 
