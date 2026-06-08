@@ -270,14 +270,3 @@ class RecGPTForCausalLM(PreTrainedModel):
         if loss is None:
             return (logits,)
         return (loss, logits)
-
-
-try:
-    from transformers import AutoConfig, AutoModelForCausalLM
-
-    RecGPTConfig.register_for_auto_class()
-    RecGPTForCausalLM.register_for_auto_class("AutoModelForCausalLM")
-    AutoConfig.register(RecGPTConfig.model_type, RecGPTConfig)
-    AutoModelForCausalLM.register(RecGPTConfig, RecGPTForCausalLM)
-except Exception:
-    pass
