@@ -16,12 +16,13 @@ class RecGPTConfig(PretrainedConfig):
         self,
         vocab_size: int = 32768,
         hidden_size: int = 640,
+        embedding_size: int = 128, # Allows for factorized embeddings, only makes sense at babylm scale.
         head_dim: int = 64,
         intermediate_size: int = 10240,
         recursive_depth: int = 16,
         max_position_embeddings: int = 512,
         pad_token_id: int = 0, # Padding is determined by segment_ids, this is only used for embeddings/HF metadata.
-        tie_word_embeddings: bool = False,
+        tie_word_embeddings: bool = False, # Tied embeddings greatly hurt performance for recursive models.
         **kwargs,
     ):
         super().__init__(
@@ -34,6 +35,7 @@ class RecGPTConfig(PretrainedConfig):
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
+        self.embedding_size = embedding_size
         self.head_dim = head_dim
         self.num_heads = hidden_size // head_dim
         self.intermediate_size = intermediate_size
@@ -176,7 +178,15 @@ class RecGPTForCausalLM(PreTrainedModel):
 
     def __init__(self, config: RecGPTConfig):
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
+        self.use_factorized = config.embedding_size != config.hidden_size
+
+        # Factorized Embeddings (https://arxiv.org/pdf/1909.11942)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.embedding_size, padding_idx=config.pad_token_id)
+        if self.use_factorized:
+            self.e_to_h = nn.Linear(config.embedding_size, config.hidden_size, bias=False)
+            self.h_to_e = nn.Linear(config.hidden_size, config.embedding_size, bias=False)
+        if not config.tie_word_embeddings:
+            self.lm_head = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
 
         # This is the main recursive model idea: a single block is reused at every depth.
         # The norms are depth-specific, but the attention and MLP weights are shared.
@@ -184,7 +194,6 @@ class RecGPTForCausalLM(PreTrainedModel):
         self.attn_norms = nn.ModuleList([RMSNorm(config.hidden_size) for _ in range(config.recursive_depth)])
         self.mlp_norms = nn.ModuleList([RMSNorm(config.hidden_size) for _ in range(config.recursive_depth)])
         self.final_norm = RMSNorm(config.hidden_size)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         self.post_init()
         if config.tie_word_embeddings:
@@ -200,7 +209,7 @@ class RecGPTForCausalLM(PreTrainedModel):
         self.embed_tokens = value
 
     def get_output_embeddings(self):
-        return self.lm_head
+        return getattr(self, "lm_head", None)
 
     def set_output_embeddings(self, value):
         self.lm_head = value
@@ -255,10 +264,18 @@ class RecGPTForCausalLM(PreTrainedModel):
         backend = _select_flex_backend(input_ids.device)
 
         x = self.embed_tokens(input_ids)
+        if self.use_factorized:
+            x = self.e_to_h(x)
         for attn_norm, mlp_norm in zip(self.attn_norms, self.mlp_norms):
             x = self.block(x, attn_norm, mlp_norm, position_ids, block_mask, backend)
 
-        logits = self.lm_head(self.final_norm(x))
+        x = self.final_norm(x)
+        if self.use_factorized:
+            x = self.h_to_e(x)
+        if hasattr(self, "lm_head"):
+            logits = self.lm_head(x)
+        else:
+            logits = F.linear(x, self.embed_tokens.weight)
 
         loss = None
         if labels is not None:

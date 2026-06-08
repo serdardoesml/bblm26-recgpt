@@ -65,7 +65,7 @@ def build_optimizer(model: RecGPTForCausalLM, cfg: TrainConfig):
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if p.ndim < 2 or "embed_tokens" in name or "lm_head" in name or "norm" in name:
+        if p.ndim < 2 or "embed_tokens" in name or "lm_head" in name or "norm" in name or "e_to_h" in name or "h_to_e" in name:
             adam_params.append(p)
         else:
             muon_params.append(p)
