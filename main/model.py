@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from transformers import PretrainedConfig, PreTrainedModel
+from transformers import initialization as init
 from transformers.modeling_outputs import CausalLMOutput
 
 
@@ -65,13 +66,27 @@ class RotaryEmbedding(nn.Module):
         if head_dim % 2 != 0:
             raise ValueError("RoPE requires an even head dimension.")
 
-        inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2).float() / head_dim))
-        positions = torch.arange(max_position_embeddings, dtype=torch.float)
-        freqs = torch.outer(positions, inv_freq)
-        
+        self.head_dim = head_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.theta = theta
+
         # We register these as buffers to ensure they get moved to device together with the model.
-        self.register_buffer("cos", freqs.cos(), persistent=False)
-        self.register_buffer("sin", freqs.sin(), persistent=False)
+        self.register_buffer("cos", torch.empty(max_position_embeddings, head_dim // 2), persistent=False)
+        self.register_buffer("sin", torch.empty(max_position_embeddings, head_dim // 2), persistent=False)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        inv_freq = 1.0 / (
+            self.theta
+            ** (
+                torch.arange(0, self.head_dim, 2, device=self.cos.device, dtype=torch.float32)
+                / self.head_dim
+            )
+        )
+        positions = torch.arange(self.max_position_embeddings, device=self.cos.device, dtype=torch.float32)
+        freqs = torch.outer(positions, inv_freq)
+        init.copy_(self.cos, freqs.cos())
+        init.copy_(self.sin, freqs.sin())
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         cos = self.cos[position_ids].unsqueeze(2).to(dtype=x.dtype)
@@ -219,8 +234,9 @@ class RecGPTForCausalLM(PreTrainedModel):
         if config.tie_word_embeddings:
             self.tie_weights()
 
-    def init_weights(self):
-        return
+    def _init_weights(self, module: nn.Module):
+        if isinstance(module, RotaryEmbedding):
+            module.reset_parameters()
 
     def get_input_embeddings(self):
         return self.embed_tokens
