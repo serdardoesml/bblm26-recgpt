@@ -21,7 +21,7 @@ class TrainConfig:
     model_config: RecGPTConfig = field(default_factory=RecGPTConfig)
     dataset: str = "bblm10M.parquet"
     tokenizer: str = "bblm10M-bpe"
-    run_name: str = "rec-r16-bblm-10m"
+    run_name: str = "rec-r16-10m"
     seed: int = 0
     data_seed: int = 0
 

@@ -183,30 +183,6 @@ class MLP(nn.Module):
         return self.down(F.relu(self.up(x)).square())
 
 
-class RecursiveBlock(nn.Module):
-    def __init__(self, config: RecGPTConfig):
-        super().__init__()
-        self.attn = SelfAttention(config)
-        self.mlp = MLP(config)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        attn_norm: RMSNorm,
-        mlp_norm: RMSNorm,
-        position_ids: torch.Tensor,
-        block_mask,
-        backend: str,
-    ) -> torch.Tensor:
-        # We do pre-norm and QK norm.
-        # We used to do a Gemma 3 style post-norm, but removed it to improve stability
-        # and keep the residual stream norm in check. Seems to work fine.
-        # Update: Tried KEEL norm paper with residual scaling, it hurt performance.
-        x = x + self.attn(attn_norm(x), position_ids, block_mask, backend)
-        x = x + self.mlp(mlp_norm(x))
-        return x
-
-
 class RecGPTForCausalLM(PreTrainedModel):
     config_class = RecGPTConfig
     base_model_prefix = "model"
@@ -223,9 +199,10 @@ class RecGPTForCausalLM(PreTrainedModel):
         if not config.tie_word_embeddings:
             self.lm_head = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
 
-        # This is the main recursive model idea: a single block is reused at every depth.
-        # The norms are depth-specific, but the attention and MLP weights are shared.
-        self.block = RecursiveBlock(config)
+        # This is the main recursive model idea: attention and MLP weights are
+        # reused at every depth. The norms are depth-specific.
+        self.attn = SelfAttention(config)
+        self.mlp = MLP(config)
         self.attn_norms = nn.ModuleList([RMSNorm(config.hidden_size, use_bias=True) for _ in range(config.recursive_depth)])
         self.mlp_norms = nn.ModuleList([RMSNorm(config.hidden_size, use_bias=True) for _ in range(config.recursive_depth)])
         self.final_norm = RMSNorm(config.hidden_size)
@@ -303,7 +280,12 @@ class RecGPTForCausalLM(PreTrainedModel):
         if self.use_factorized:
             x = self.e_to_h(x)
         for attn_norm, mlp_norm in zip(self.attn_norms, self.mlp_norms):
-            x = self.block(x, attn_norm, mlp_norm, position_ids, block_mask, backend)
+            # We do pre-norm and QK norm.
+            # We used to do a Gemma 3 style post-norm, but removed it to improve stability
+            # and keep the residual stream norm in check. Seems to work fine.
+            # Update: Tried KEEL norm paper with residual scaling, it hurt performance.
+            x = x + self.attn(attn_norm(x), position_ids, block_mask, backend)
+            x = x + self.mlp(mlp_norm(x))
 
         x = self.final_norm(x)
         if self.use_factorized:
