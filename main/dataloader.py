@@ -77,14 +77,12 @@ def pack_batch(segments, tokens_per_batch, pad_token_id=0, device=None):
       input_ids    [1, tokens_per_batch]  (long)
       labels       [1, tokens_per_batch]  (long, pad positions are -100)
       segment_ids  [1, tokens_per_batch]  (long, independent document segments; pad is -1)
-      position_ids [1, tokens_per_batch]  (long, resets each segment)
 
     """
 
     input_ids: list[int] = []
     labels: list[int] = []
     segment_ids: list[int] = []
-    position_ids: list[int] = []
 
     for segment_id, s in enumerate(segments):
         L = len(s) - 1  # after shift
@@ -93,14 +91,12 @@ def pack_batch(segments, tokens_per_batch, pad_token_id=0, device=None):
         input_ids.extend(s[:-1])
         labels.extend(s[1:])
         segment_ids.extend([segment_id] * L)
-        position_ids.extend(range(L))
 
     pad_len = tokens_per_batch - len(input_ids)
     assert pad_len >= 0 # Caller should ensure segments fit in tokens_per_batch, impossible for batch_iterator as caller.
     input_ids.extend([pad_token_id] * pad_len)
     labels.extend([-100] * pad_len)
     segment_ids.extend([-1] * pad_len)
-    position_ids.extend([0] * pad_len)
 
     # CUDA and ROCm supports memory pinning for asynchronous transfers between CPU and GPU
     # I have absolutely no idea if doing it this way is any faster than creating the tensor on GPU directly
@@ -110,16 +106,14 @@ def pack_batch(segments, tokens_per_batch, pad_token_id=0, device=None):
     input_ids_t = torch.tensor(input_ids, dtype=torch.long, pin_memory=use_pinned_memory, device="cpu")
     labels_t = torch.tensor(labels, dtype=torch.long, pin_memory=use_pinned_memory, device="cpu")
     segment_ids_t = torch.tensor(segment_ids, dtype=torch.long, pin_memory=use_pinned_memory, device="cpu")
-    position_ids_t = torch.tensor(position_ids, dtype=torch.long, pin_memory=use_pinned_memory, device="cpu")
 
     if device is not None:
         input_ids_t = input_ids_t.to(device, non_blocking=use_pinned_memory)
         labels_t = labels_t.to(device, non_blocking=use_pinned_memory)
         segment_ids_t = segment_ids_t.to(device, non_blocking=use_pinned_memory)
-        position_ids_t = position_ids_t.to(device, non_blocking=use_pinned_memory)
 
     # FlexAttention expects batched tensors; each loader batch is one packed row.
-    return input_ids_t.unsqueeze(0), labels_t.unsqueeze(0), segment_ids_t.unsqueeze(0), position_ids_t.unsqueeze(0)
+    return input_ids_t.unsqueeze(0), labels_t.unsqueeze(0), segment_ids_t.unsqueeze(0)
 
 
 def batch_iterator(
@@ -179,7 +173,7 @@ if __name__ == "__main__":
     parquet_file = os.path.join(get_base_dir(), "data", "tokenized", "climbmix100Mwords.parquet")
     batch_count = 5
     i = 0
-    for input_ids, labels, segment_ids, position_ids in batch_iterator(
+    for input_ids, labels, segment_ids in batch_iterator(
         parquet_file,
         tokens_per_batch=8192,
         max_sl=256,
@@ -187,6 +181,6 @@ if __name__ == "__main__":
         drop_last=True
     ):
         i += 1
-        print(input_ids.shape, labels.shape, segment_ids.shape, position_ids.shape)
+        print(input_ids.shape, labels.shape, segment_ids.shape)
         if i > batch_count:
             break

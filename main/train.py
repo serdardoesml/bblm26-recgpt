@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import shutil
 import time
 from dataclasses import dataclass, field
 
@@ -114,6 +115,16 @@ def config_to_json(cfg: TrainConfig) -> dict:
     return out
 
 
+def save_hf_checkpoint(model: RecGPTForCausalLM, tokenizer: AutoTokenizer, out_dir):
+    model.config.auto_map = {
+        "AutoConfig": "modeling_recgpt.RecGPTConfig",
+        "AutoModelForCausalLM": "modeling_recgpt.RecGPTForCausalLM",
+    }
+    model.save_pretrained(out_dir)
+    tokenizer.save_pretrained(out_dir)
+    shutil.copyfile(get_base_dir() / "main" / "model.py", out_dir / "modeling_recgpt.py")
+
+
 def train(cfg: TrainConfig):
     device, rank, local_rank, world_size, ddp = setup_distributed()
     torch.manual_seed(cfg.seed + rank)
@@ -185,9 +196,9 @@ def train(cfg: TrainConfig):
             rank=rank,
             world_size=world_size,
         )
-        for input_ids, labels, segment_ids, position_ids in iterator:
+        for input_ids, labels, segment_ids in iterator:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                out = model(input_ids=input_ids, segment_ids=segment_ids, position_ids=position_ids, labels=labels)
+                out = model(input_ids=input_ids, segment_ids=segment_ids, labels=labels)
                 loss = out.loss / grad_acc
 
             loss.backward()
@@ -229,8 +240,7 @@ def train(cfg: TrainConfig):
     if rank == 0:
         out_dir = root / cfg.save_dir / cfg.run_name
         out_dir.mkdir(parents=True, exist_ok=True)
-        unwrap_model(model).save_pretrained(out_dir)
-        tokenizer.save_pretrained(out_dir)
+        save_hf_checkpoint(unwrap_model(model), tokenizer, out_dir)
         with (out_dir / "train_config.json").open("w", encoding="utf-8") as f:
             json.dump(config_to_json(cfg), f, indent=2)
         print(f"saved model to {out_dir}")

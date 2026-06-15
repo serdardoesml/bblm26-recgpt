@@ -227,11 +227,11 @@ class RecGPTForCausalLM(PreTrainedModel):
     def set_output_embeddings(self, value):
         self.lm_head = value
 
-    def forward(
+    def forward( # Everything expected in shape [batch, seq_len]
         self,
         input_ids: torch.Tensor,
-        segment_ids: torch.Tensor,
-        position_ids: torch.Tensor,
+        segment_ids: Optional[torch.Tensor] = None, # We use segment_ids for our packed training
+        attention_mask: Optional[torch.Tensor] = None, # But we also support attention_mask for compatibility with HF transformers stack.
         labels: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
         **kwargs,
@@ -240,10 +240,39 @@ class RecGPTForCausalLM(PreTrainedModel):
         # We keep the batch dimension because HF expects it.
         if input_ids.dim() != 2:
             raise ValueError("input_ids must have shape [batch, seq_len].")
-        if segment_ids.shape != input_ids.shape:
+        if segment_ids is not None and segment_ids.shape != input_ids.shape:
             raise ValueError("segment_ids must match input_ids shape.")
-        if position_ids.shape != input_ids.shape:
-            raise ValueError("position_ids must match input_ids shape.")
+        if attention_mask is not None and segment_ids is None: # Compatibility with HF transformers stack. Ignored if segment_ids are provided.
+            if attention_mask.shape != input_ids.shape:
+                raise ValueError("attention_mask must match input_ids shape when segment_ids is not provided.")
+            # Assumes standard binary attention mask where 1 indicates a real token and 0 indicates padding. 
+            # Converts to segment_ids where padding is -1 and real tokens are >= 0.
+            assert ((attention_mask == 0) | (attention_mask == 1)).all()
+            segment_ids = attention_mask.to(device=input_ids.device, dtype=torch.long) - 1
+        if segment_ids is None:
+            segment_ids = torch.zeros_like(input_ids)
+
+        assert segment_ids.device == input_ids.device # If segment_ids are passed explicitly, they should be on the same device.
+
+        # Construct position_ids from segment_ids
+        valid = segment_ids >= 0
+        seq_positions = torch.arange(input_ids.size(1), device=input_ids.device, dtype=torch.long).unsqueeze(0)
+
+        # This marks where a valid segment starts. A token is a segment start if:
+        # - It's valid
+        # - Either it is the first token, or its segment_id differs from the previous token.
+        segment_starts = valid & torch.cat(
+            [
+                torch.ones(segment_ids.size(0), 1, device=input_ids.device, dtype=torch.bool), # First token
+                segment_ids[:, 1:] != segment_ids[:, :-1], # Segment ID changes
+            ],
+            dim=1,
+        )
+
+        # Put each segment start's absolute index at the start token, then cummax fills the latest start index across that segment.
+        # Subtracting it from the absolute token index gives local positions per segment.
+        segment_start_positions = torch.where(segment_starts, seq_positions, 0).cummax(dim=-1).values
+        position_ids = (seq_positions - segment_start_positions).masked_fill(~valid, 0)
 
         from torch.nn.attention.flex_attention import create_block_mask
 
