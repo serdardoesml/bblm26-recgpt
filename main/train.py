@@ -47,7 +47,7 @@ class TrainConfig:
 
     torch_compile: bool = True
     use_wandb: bool = False
-    wandb_project: str = "recursive_lm"
+    wandb_project: str = "bblm26-recgpt"
     log_every: int = 10
     save_dir: str = "models"
 
