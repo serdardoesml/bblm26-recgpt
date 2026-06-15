@@ -1,6 +1,6 @@
 """
-NorMuon optimizer (https://arxiv.org/pdf/2510.05491)
-Code copied and modified from https://github.com/zichongli5/NorMuon/
+Aurora optimizer code copied and modified from
+https://github.com/tilde-research/aurora-release
 
 Modified to implement Cautious Weight Decay (https://arxiv.org/pdf/2510.12402)
 CWD decays only coordinates where update and parameter align.
@@ -8,57 +8,78 @@ CWD decays only coordinates where update and parameter align.
 
 import torch
 
-# copied from https://github.com/KellerJordan/Muon/blob/master/muon.py
-def zeropower_via_newtonschulz5(G, steps=5):
-    """
-    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
-    quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
-    of minimizing steps, it turns out to be empirically effective to keep increasing the slope at
-    zero even beyond the point where the iteration no longer converges all the way to one everywhere
-    on the interval. This iteration therefore does not produce UV^T but rather something like US'V^T
-    where S' is diagonal with S_{ii}' ~ Uniform(0.5, 1.5), which turns out not to hurt model
-    performance at all relative to UV^T, where USV^T = G is the SVD.
-    """
-    assert G.ndim >= 2 # batched Muon implementation by @scottjmaddox, and put into practice in the record by @YouJiacheng
-    a, b, c = (3.4445, -4.7750,  2.0315)
+
+def polar(G: torch.Tensor) -> torch.Tensor:
+    """Polar factor via 12-step simple-quintic Newton-Schulz."""
+    assert G.ndim >= 2
     X = G.bfloat16()
     if G.size(-2) > G.size(-1):
         X = X.mT
 
-    # Ensure spectral norm is at most 1
+    # Ensure spectral norm <= 1 so the iteration converges to polar.
     X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
-    # Perform the NS iterations
-    for _ in range(steps):
+    a, b, c = 2, -1.5, 0.5
+    for _ in range(12):
         A = X @ X.mT
-        B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
+        B = b * A + c * A @ A
         X = a * X + B @ X
 
     if G.size(-2) > G.size(-1):
         X = X.mT
     return X
 
-def normuon_update(grad, momentum, second_momentum, beta=0.95, beta2=0.95, ns_steps=5, nesterov=True):
-    momentum.lerp_(grad, 1 - beta)
-    update = grad.lerp_(momentum, beta) if nesterov else momentum
-    original_shape = None
-    if update.ndim == 4:  # for the case of conv filters
-        original_shape = update.shape
-        update = update.reshape(update.size(0), -1)
-    update = zeropower_via_newtonschulz5(update, steps=ns_steps)
-    if original_shape is not None:
-        update = update.reshape(original_shape)
 
-    # Normuon Added
-    vnorm = update.norm(dim=(-2,-1), keepdim=True)
-    v_mean = torch.mean(update * update, dim=-1, keepdim=True, dtype=second_momentum.dtype)
-    second_momentum.lerp_(v_mean, 1 - beta2)
-    step_size = 1 / second_momentum.sqrt().add_(1e-10)
-    update.mul_(step_size)
-    vnorm_new = update.norm(dim=(-2,-1), keepdim=True)
-    update.mul_(vnorm / (vnorm_new.add_(1e-10))) # This scaling keep the update norm the same as pre-normalization
+def aurora_update(
+    grad: torch.Tensor,
+    momentum: torch.Tensor,
+    mu: float = 0.95,
+    nesterov: bool = True,
+    pp_iterations: int = 2,
+    pp_beta: float = 0.5,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    if grad.ndim != 2:
+        raise ValueError(f"aurora expects 2D gradient tensors, got shape {tuple(grad.shape)}")
+    if momentum.shape != grad.shape:
+        raise ValueError(f"momentum shape {tuple(momentum.shape)} must match grad shape {tuple(grad.shape)}")
+    if not (0.0 < mu < 1.0):
+        raise ValueError(f"mu must be in (0, 1), got {mu}")
+    if eps <= 0.0:
+        raise ValueError(f"eps must be positive, got {eps}")
+    if pp_iterations < 1:
+        raise ValueError(f"pp_iterations must be >= 1, got {pp_iterations}")
+    if pp_beta <= 0.0:
+        raise ValueError(f"pp_beta must be positive, got {pp_beta}")
 
-    update *= max(1, grad.size(-2) / grad.size(-1))**0.5
+    momentum.lerp_(grad, 1 - mu)
+    update = grad.lerp_(momentum, mu) if nesterov else momentum.clone()
+
+    m, n = update.size(-2), update.size(-1)
+    if m == n:
+        update = polar(update)
+    else:
+        transposed = m < n
+        if transposed:
+            update = update.mT
+            m, n = n, m
+
+        G32 = update.to(torch.float32)
+        target_row_sq = n / m
+        row_norm = G32.norm(dim=-1, keepdim=True).clamp_(min=eps)
+        D = 1.0 / row_norm
+        for k in range(pp_iterations):
+            U = polar(D * G32)
+            if k < pp_iterations - 1:
+                row_sq = U.to(torch.float32).pow(2).sum(dim=-1, keepdim=True).clamp_(min=eps * eps)
+                D = D * (target_row_sq / row_sq).pow(pp_beta)
+
+        update = U.mT if transposed else U
+
+    update *= max(1, grad.size(-2) / grad.size(-1)) ** 0.5
+    if not update.isfinite().all():
+        raise RuntimeError("aurora produced non-finite update")
     return update
+
 
 def adam_update(grad, buf1, buf2, step, betas, eps):
     buf1.lerp_(grad, 1 - betas[0])
@@ -67,10 +88,9 @@ def adam_update(grad, buf1, buf2, step, betas, eps):
     buf2c = buf2 / (1 - betas[1]**step)
     return buf1c / (buf2c.sqrt() + eps)
 
-# Original muon code from https://github.com/KellerJordan/Muon/blob/master/muon.py
-class SingleDeviceNorMuonWithAuxAdam(torch.optim.Optimizer):
+class SingleDeviceAuroraWithAuxAdam(torch.optim.Optimizer):
     """
-    Non-distributed counterpart to NorMuonWithAuxAdam.
+    Single-device Aurora for 2D weights, with Adam for auxiliary parameters.
     """
     def __init__(self, param_groups):
         for group in param_groups:
@@ -78,9 +98,15 @@ class SingleDeviceNorMuonWithAuxAdam(torch.optim.Optimizer):
             if group["use_muon"]:
                 group["lr"] = group.get("lr", 0.02)
                 group["momentum"] = group.get("momentum", 0.95)
-                group["beta2"] = group.get("beta2", 0.95)
+                group["nesterov"] = group.get("nesterov", True)
+                group["pp_iterations"] = group.get("pp_iterations", 2)
+                group["pp_beta"] = group.get("pp_beta", 0.5)
+                group["eps"] = group.get("eps", 1e-7)
                 group["weight_decay"] = group.get("weight_decay", 0)
-                assert set(group.keys()) == {"params", "lr", "momentum", "beta2", "weight_decay", "use_muon"}
+                assert set(group.keys()) == {
+                    "params", "lr", "momentum", "nesterov", "pp_iterations",
+                    "pp_beta", "eps", "weight_decay", "use_muon",
+                }
             else:
                 group["lr"] = group.get("lr", 3e-4)
                 group["betas"] = group.get("betas", (0.9, 0.95))
@@ -106,17 +132,22 @@ class SingleDeviceNorMuonWithAuxAdam(torch.optim.Optimizer):
                     state = self.state[p]
                     if len(state) == 0:
                         state["momentum_buffer"] = torch.zeros_like(p)
-                        state["second_momentum_buffer"] = torch.zeros_like(p[..., 0:1])
-                    update = normuon_update(p.grad, state["momentum_buffer"], state["second_momentum_buffer"],
-                                            beta=group["momentum"], beta2=group["beta2"])
+                    update = aurora_update(
+                        p.grad,
+                        state["momentum_buffer"],
+                        mu=group["momentum"],
+                        nesterov=group["nesterov"],
+                        pp_iterations=group["pp_iterations"],
+                        pp_beta=group["pp_beta"],
+                        eps=group["eps"],
+                    )
                     if group["weight_decay"] and had_grad:
                         # Cautious Weight Decay
                         lr = group["lr"]
                         wd = group["weight_decay"]
-                        u = update.reshape(p.shape)
-                        mask = (u * p).ge(0)
+                        mask = (update * p).ge(0)
                         p.add_(p * mask, alpha=-lr * wd)
-                    p.add_(update.reshape(p.shape), alpha=-group["lr"])
+                    p.add_(update, alpha=-group["lr"])
             else:
                 for p in group["params"]:
                     had_grad = p.grad is not None

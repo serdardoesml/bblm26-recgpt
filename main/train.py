@@ -14,7 +14,7 @@ from transformers import AutoTokenizer
 from .common import get_base_dir, print0, setup_distributed
 from .dataloader import batch_iterator, count_dataset_tokens
 from .model import RecGPTConfig, RecGPTForCausalLM
-from .optimizer import SingleDeviceNorMuonWithAuxAdam
+from .optimizer import SingleDeviceAuroraWithAuxAdam
 
 
 @dataclass
@@ -71,7 +71,7 @@ def build_optimizer(model: RecGPTForCausalLM, cfg: TrainConfig):
         else:
             muon_params.append(p)
 
-    return SingleDeviceNorMuonWithAuxAdam(
+    return SingleDeviceAuroraWithAuxAdam(
         [
             {"params": adam_params, "lr": cfg.lr_embed, "use_muon": False, "weight_decay": cfg.wd_adam},
             {"params": muon_params, "lr": cfg.lr_block, "use_muon": True, "weight_decay": cfg.wd_muon},
