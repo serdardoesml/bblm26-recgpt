@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 import torch
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoTokenizer
 
@@ -179,10 +180,10 @@ def train(cfg: TrainConfig):
 
     step = 0
     micro_step = 0
-    tokens_seen = 0
-    loss_accum = 0.0
+    tokens_seen = torch.tensor(0, device=device, dtype=torch.long)
+    step_tokens_accum = torch.tensor(0, device=device, dtype=torch.long)
+    loss_accum = torch.tensor(0, device=device)
     step_start_time = time.time()
-    step_start_tokens = 0
     optimizer.zero_grad(set_to_none=True)
     model.train()
 
@@ -203,12 +204,16 @@ def train(cfg: TrainConfig):
                 loss = out.loss / grad_acc
 
             loss.backward()
-            loss_accum += float(loss.detach()) * grad_acc
-            tokens_seen += global_microbatch_tok
+            loss_accum += loss.detach() * grad_acc # We multiply by grad_acc as microbatch loss is averaged over tokens.
+            step_tokens_accum += input_ids.ne(cfg.model_config.pad_token_id).sum()
             micro_step += 1
 
             if micro_step % grad_acc != 0:
                 continue
+
+            if ddp:
+                dist.all_reduce(step_tokens_accum, op=dist.ReduceOp.SUM)
+            tokens_seen += step_tokens_accum
 
             if cfg.max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(raw_model.parameters(), cfg.max_grad_norm)
@@ -218,35 +223,36 @@ def train(cfg: TrainConfig):
 
             now = time.time()
             step_elapsed = max(now - step_start_time, 1e-9)
-            step_tokens = tokens_seen - step_start_tokens
-            if step % cfg.log_every == 0:
+            if rank == 0 and step % cfg.log_every == 0:
+                loss_accum_float = loss_accum.item()
+                step_tokens_int = step_tokens_accum.item()
+                tokens_seen_int = tokens_seen.item()
                 metrics = {
                     "step": step,
                     "epoch": epoch + 1,
-                    "loss": loss_accum,
+                    "loss": loss_accum_float,
                     "lr_embed": optimizer.param_groups[0]["lr"],
                     "lr_block": optimizer.param_groups[1]["lr"],
-                    "tokens_seen": tokens_seen,
-                    "tokens_per_sec": step_tokens / step_elapsed,
+                    "tokens_seen": tokens_seen_int,
+                    "tokens_per_sec": step_tokens_int / step_elapsed,
                     "step_time": step_elapsed,
                 }
-                print0(
+                print(
                     f"Epoch {epoch + 1}/{cfg.epochs} "
                     f"Step {step}/{total_steps} "
-                    f"training loss: {loss_accum:.3f} "
+                    f"training loss: {loss_accum_float:.3f} "
                     f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
                     f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
                     f"step_time {step_elapsed:.2f}s "
-                    f"tok/s {step_tokens / step_elapsed:.0f} ",
-                    rank=rank,
+                    f"tok/s {step_tokens_int / step_elapsed:.0f} "
                 )
                 if wandb_run is not None:
-                    wandb_run.log(metrics, step=tokens_seen)
+                    wandb_run.log(metrics, step=tokens_seen_int)
 
             step += 1
-            loss_accum = 0.0
+            loss_accum.zero_()
+            step_tokens_accum.zero_()
             step_start_time = now
-            step_start_tokens = tokens_seen
             if step >= total_steps:
                 break
         if step >= total_steps:
