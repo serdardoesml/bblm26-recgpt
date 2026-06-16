@@ -4,6 +4,9 @@ https://github.com/tilde-research/aurora-release
 
 Modified to implement Cautious Weight Decay (https://arxiv.org/pdf/2510.12402)
 CWD decays only coordinates where update and parameter align.
+
+Aurora fixes the dead neuron issue with tall matrixes, and the more rectangular the matrix is the more effective it is.
+Therefore it should be a good fit for RecursiveGPT as we use a 16x MLP multiplier.
 """
 
 import torch
