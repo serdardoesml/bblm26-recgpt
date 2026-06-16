@@ -181,7 +181,8 @@ def train(cfg: TrainConfig):
     micro_step = 0
     tokens_seen = 0
     loss_accum = 0.0
-    start_time = time.time()
+    step_start_time = time.time()
+    step_start_tokens = 0
     optimizer.zero_grad(set_to_none=True)
     model.train()
 
@@ -215,21 +216,38 @@ def train(cfg: TrainConfig):
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
+            now = time.time()
+            step_elapsed = max(now - step_start_time, 1e-9)
+            step_tokens = tokens_seen - step_start_tokens
             if step % cfg.log_every == 0:
-                elapsed = max(time.time() - start_time, 1e-9)
                 metrics = {
+                    "step": step,
+                    "epoch": epoch + 1,
                     "loss": loss_accum,
                     "lr_embed": optimizer.param_groups[0]["lr"],
                     "lr_block": optimizer.param_groups[1]["lr"],
                     "tokens_seen": tokens_seen,
-                    "tokens_per_sec": tokens_seen / elapsed,
+                    "tokens_per_sec": step_tokens / step_elapsed,
+                    "step_time": step_elapsed,
                 }
-                print0(f"step {step:05d} " + " ".join(f"{k}={v:.4g}" for k, v in metrics.items()), rank=rank)
+                print0(
+                    f"Epoch {epoch + 1}/{cfg.epochs} "
+                    f"Step {step}/{total_steps} "
+                    f"training loss: {loss_accum:.4f} "
+                    f"lr_embed {optimizer.param_groups[0]['lr']:.6g} "
+                    f"lr_block {optimizer.param_groups[1]['lr']:.6g} "
+                    f"step_time {step_elapsed:.2f}s "
+                    f"tok/s {step_tokens / step_elapsed:.0f} "
+                    f"tokens_seen {tokens_seen}",
+                    rank=rank,
+                )
                 if wandb_run is not None:
                     wandb_run.log(metrics, step=tokens_seen)
 
             step += 1
             loss_accum = 0.0
+            step_start_time = now
+            step_start_tokens = tokens_seen
             if step >= total_steps:
                 break
         if step >= total_steps:
