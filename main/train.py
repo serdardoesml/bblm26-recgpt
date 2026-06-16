@@ -44,14 +44,12 @@ class TrainConfig:
     wd_muon: float = 0.1
     warmup_steps: int = 50
     cooldown_steps: int = 800
-    max_grad_norm: float = 2.0
+    max_grad_norm: float = 2.0 # Not sure this is needed but may help with stability
 
     torch_compile: bool = True
     use_wandb: bool = False
     wandb_project: str = "bblm26-recgpt"
     log_every: int = 10
-    save_dir: str = "models"
-
 
 def unwrap_model(model: torch.nn.Module) -> RecGPTForCausalLM:
     if isinstance(model, DDP):
@@ -60,7 +58,7 @@ def unwrap_model(model: torch.nn.Module) -> RecGPTForCausalLM:
         model = model._orig_mod
     return model
 
-
+# TODO: Check and maybe simplify this
 def build_optimizer(model: RecGPTForCausalLM, cfg: TrainConfig):
     adam_params = []
     muon_params = []
@@ -128,10 +126,10 @@ def save_hf_checkpoint(model: RecGPTForCausalLM, tokenizer: AutoTokenizer, out_d
 
 def train(cfg: TrainConfig):
     device, rank, local_rank, world_size, ddp = setup_distributed()
-    torch.manual_seed(cfg.seed + rank)
-    torch.cuda.manual_seed_all(cfg.seed + rank)
-    random.seed(cfg.seed + rank)
-    torch.set_float32_matmul_precision("high")
+
+    random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed_all(cfg.seed)
 
     root = get_base_dir()
     parquet_path = root / "data" / "tokenized" / cfg.dataset
@@ -182,7 +180,7 @@ def train(cfg: TrainConfig):
     micro_step = 0
     tokens_seen = torch.tensor(0, device=device, dtype=torch.long)
     step_tokens_accum = torch.tensor(0, device=device, dtype=torch.long)
-    loss_accum = torch.tensor(0, device=device)
+    loss_accum = torch.tensor(0, device=device) # We have to accumulate this stuff to support grad acc
     step_start_time = time.time()
     optimizer.zero_grad(set_to_none=True)
     model.train()
@@ -261,7 +259,8 @@ def train(cfg: TrainConfig):
     if ddp:
         torch.distributed.barrier()
     if rank == 0:
-        out_dir = root / cfg.save_dir / cfg.run_name
+        # Save the final model checkpoint in HF format along with model.py to load it.
+        out_dir = root / "models" / cfg.run_name
         out_dir.mkdir(parents=True, exist_ok=True)
         save_hf_checkpoint(unwrap_model(model), tokenizer, out_dir)
         with (out_dir / "train_config.json").open("w", encoding="utf-8") as f:
