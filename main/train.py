@@ -233,12 +233,11 @@ def train(cfg: TrainConfig):
                 print0(
                     f"Epoch {epoch + 1}/{cfg.epochs} "
                     f"Step {step}/{total_steps} "
-                    f"training loss: {loss_accum:.4f} "
-                    f"lr_embed {optimizer.param_groups[0]['lr']:.6g} "
-                    f"lr_block {optimizer.param_groups[1]['lr']:.6g} "
+                    f"training loss: {loss_accum:.3f} "
+                    f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
+                    f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
                     f"step_time {step_elapsed:.2f}s "
-                    f"tok/s {step_tokens / step_elapsed:.0f} "
-                    f"tokens_seen {tokens_seen}",
+                    f"tok/s {step_tokens / step_elapsed:.0f} ",
                     rank=rank,
                 )
                 if wandb_run is not None:
