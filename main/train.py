@@ -38,12 +38,12 @@ class TrainConfig:
 
     lr_embed: float = 0.005
     lr_block: float = 0.02
-    min_lr_embed: float = 0.0
+    min_lr_embed: float = 0.0 # Minimums are for cooldown, ignored during warmup
     min_lr_block: float = 0.0
     wd_adam: float = 0.005
     wd_muon: float = 0.1
-    warmup_steps: int = 50
-    cooldown_steps: int = 800
+    warmup_ratio: float = 0.0
+    cooldown_ratio: float = 0.2
     max_grad_norm: float = 2.0 # Not sure this is needed but may help with stability
 
     torch_compile: bool = True
@@ -77,35 +77,46 @@ def build_optimizer(model: RecGPTForCausalLM, cfg: TrainConfig):
         ]
     )
 
+# Simple function to calculate lr from current tokens seen.
+# We use token-based scheduling instead of step-based because of variable padding meaning we don't know exactly how many steps the dataset will be.
+# This way we don't waste any tokens while also having an accurate lr schedule.
+def token_to_lr(
+    tokens_seen: int,
+    total_tokens: int,
+    warmup_ratio: float,
+    cooldown_ratio: float,
+    base_lr: float,
+    min_lr: float, # Min for cooldown, ignored during warmup
+) -> float:
+    # Linear warmup, constant phase, then linear cooldown to min_lr.
+    assert total_tokens > 0
+    warmup_tokens = total_tokens * warmup_ratio
+    cooldown_tokens = total_tokens * cooldown_ratio
+    cooldown_start = total_tokens - cooldown_tokens
 
-def get_linear_schedule_with_warmup(
+    if warmup_tokens > 0 and tokens_seen < warmup_tokens:
+        factor = 1e-8 + (1.0 - 1e-8) * (tokens_seen / warmup_tokens) # Starting lr minimum 1e-8 times base_lr
+        return base_lr * factor
+    if cooldown_tokens > 0 and tokens_seen >= cooldown_start:
+        progress = min(1.0, (tokens_seen - cooldown_start) / cooldown_tokens)
+        return base_lr - (progress * (base_lr - min_lr))
+    return base_lr
+
+# Bit overkill but supports setting lrs for multiple param groups. 
+# We only have 2, but we can have more in the future if we want to for some reason.
+def set_lr( 
     optimizer: torch.optim.Optimizer,
-    warmup_steps: int,
-    cooldown_steps: int,
-    total_steps: int,
+    tokens_seen: int,
+    total_tokens: int,
+    warmup_ratio: float,
+    cooldown_ratio: float,
+    base_lrs: list[float],
     min_lrs: list[float],
 ):
-    # Linear warmup, constant phase, then linear cooldown to min_lrs.
-    base_lrs = [group["lr"] for group in optimizer.param_groups]
-    min_factors = [min_lr / lr if lr > 0 else 1.0 for min_lr, lr in zip(min_lrs, base_lrs, strict=True)]
-    warmup_steps = max(0, warmup_steps)
-    cooldown_steps = max(0, cooldown_steps)
-    total_steps = max(1, total_steps)
-    constant_steps = max(0, total_steps - warmup_steps - cooldown_steps)
-
-    def build_lambda(min_factor: float):
-        def lr_lambda(step: int):
-            if warmup_steps > 0 and step < warmup_steps:
-                return 1e-8 + (1.0 - 1e-8) * (step / warmup_steps)
-            if step < warmup_steps + constant_steps:
-                return 1.0
-            if cooldown_steps == 0:
-                return min_factor
-            progress = min(1.0, (step - warmup_steps - constant_steps) / cooldown_steps)
-            return (1.0 - progress) * (1.0 - min_factor) + min_factor
-        return lr_lambda
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, [build_lambda(f) for f in min_factors])
+    for group, base_lr, min_lr in zip(optimizer.param_groups, base_lrs, min_lrs, strict=True):
+        group["lr"] = token_to_lr(
+            tokens_seen, total_tokens, warmup_ratio, cooldown_ratio, base_lr, min_lr
+        )
 
 
 def config_to_json(cfg: TrainConfig) -> dict:
@@ -154,12 +165,17 @@ def train(cfg: TrainConfig):
         raise ValueError("total_batch_tok must be a multiple of microbatch_tok * world_size.")
     grad_acc = cfg.total_batch_tok // global_microbatch_tok
     total_microbatches = max(1, math.ceil(target_tokens / global_microbatch_tok))
-    total_steps = max(1, math.ceil(total_microbatches / grad_acc))
-    scheduler = get_linear_schedule_with_warmup(
+    estimated_total_steps = max(1, math.ceil(total_microbatches / grad_acc)) # We can only estimate this due to padding and variable sequence lengths.
+    if cfg.warmup_ratio < 0 or cfg.cooldown_ratio < 0 or cfg.warmup_ratio + cfg.cooldown_ratio > 1:
+        raise ValueError("warmup_ratio and cooldown_ratio must be nonnegative and sum to at most 1.")
+    base_lrs = [group["lr"] for group in optimizer.param_groups]
+    set_lr(
         optimizer,
-        cfg.warmup_steps,
-        cfg.cooldown_steps,
-        total_steps,
+        0,
+        target_tokens,
+        cfg.warmup_ratio,
+        cfg.cooldown_ratio,
+        base_lrs,
         [cfg.min_lr_embed, cfg.min_lr_block],
     )
 
@@ -170,7 +186,7 @@ def train(cfg: TrainConfig):
         wandb_run = wandb.init(project=cfg.wandb_project, name=cfg.run_name, config=config_to_json(cfg))
 
     print0(
-        f"training {cfg.run_name} | tokens {target_tokens} | steps {total_steps} | "
+        f"training {cfg.run_name} | tokens {target_tokens} | estimated steps {estimated_total_steps} | "
         f"microbatch_tok {cfg.microbatch_tok} | total_batch_tok {cfg.total_batch_tok} | "
         f"grad_acc {grad_acc} | world_size {world_size}",
         rank=rank,
@@ -178,8 +194,8 @@ def train(cfg: TrainConfig):
 
     step = 0
     micro_step = 0
-    tokens_seen = torch.tensor(0, device=device, dtype=torch.long)
-    step_tokens_accum = torch.tensor(0, device=device, dtype=torch.long)
+    tokens_seen = 0
+    step_tokens_accum = 0
     loss_accum = torch.tensor(0, device=device) # We have to accumulate this stuff to support grad acc
     step_start_time = time.time()
     optimizer.zero_grad(set_to_none=True)
@@ -196,64 +212,75 @@ def train(cfg: TrainConfig):
             rank=rank,
             world_size=world_size,
         )
-        for input_ids, labels, segment_ids in iterator:
+        for input_ids, labels, segment_ids, token_count in iterator:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 out = model(input_ids=input_ids, segment_ids=segment_ids, labels=labels)
                 loss = out.loss / grad_acc
 
             loss.backward()
             loss_accum += loss.detach() * grad_acc # We multiply by grad_acc as microbatch loss is averaged over tokens.
-            step_tokens_accum += input_ids.ne(cfg.model_config.pad_token_id).sum()
+            step_tokens_accum += token_count
             micro_step += 1
 
             if micro_step % grad_acc != 0:
                 continue
 
             if ddp:
-                dist.all_reduce(step_tokens_accum, op=dist.ReduceOp.SUM)
+                # Need to convert token count to tensor to all_reduce.
+                # After all that effort to avoid gpu syncing every step, this token count thing has defeated me.
+                # Technically there is no reason why token count sync has to go through the gpu... but here we are. (Only matters for multi-gpu anyways)
+                step_tokens_t = torch.tensor(step_tokens_accum, device=device, dtype=torch.long)
+                dist.all_reduce(step_tokens_t)
+                step_tokens_accum = int(step_tokens_t.item())
             tokens_seen += step_tokens_accum
 
             if cfg.max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(raw_model.parameters(), cfg.max_grad_norm)
             optimizer.step()
-            scheduler.step()
+            set_lr(
+                optimizer,
+                tokens_seen,
+                target_tokens,
+                cfg.warmup_ratio,
+                cfg.cooldown_ratio,
+                base_lrs,
+                [cfg.min_lr_embed, cfg.min_lr_block],
+            )
             optimizer.zero_grad(set_to_none=True)
 
             now = time.time()
             step_elapsed = max(now - step_start_time, 1e-9)
             if rank == 0 and step % cfg.log_every == 0:
                 loss_accum_float = loss_accum.item()
-                step_tokens_int = step_tokens_accum.item()
-                tokens_seen_int = tokens_seen.item()
                 metrics = {
                     "step": step,
                     "epoch": epoch + 1,
                     "loss": loss_accum_float,
                     "lr_embed": optimizer.param_groups[0]["lr"],
                     "lr_block": optimizer.param_groups[1]["lr"],
-                    "tokens_seen": tokens_seen_int,
-                    "tokens_per_sec": step_tokens_int / step_elapsed,
+                    "tokens_seen": tokens_seen,
+                    "tokens_per_sec": step_tokens_accum / step_elapsed,
                     "step_time": step_elapsed,
                 }
                 print(
                     f"Epoch {epoch + 1}/{cfg.epochs} "
-                    f"Step {step}/{total_steps} "
+                    f"Step {step} "
                     f"training loss: {loss_accum_float:.3f} "
                     f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
                     f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
                     f"step_time {step_elapsed:.2f}s "
-                    f"tok/s {step_tokens_int / step_elapsed:.0f} "
+                    f"tok/s {step_tokens_accum / step_elapsed:.0f} "
                 )
                 if wandb_run is not None:
-                    wandb_run.log(metrics, step=tokens_seen_int)
+                    wandb_run.log(metrics, step=tokens_seen)
 
             step += 1
             loss_accum.zero_()
-            step_tokens_accum.zero_()
+            step_tokens_accum = 0
             step_start_time = now
-            if step >= total_steps:
+            if tokens_seen >= target_tokens:
                 break
-        if step >= total_steps:
+        if tokens_seen >= target_tokens:
             break
 
     if ddp:

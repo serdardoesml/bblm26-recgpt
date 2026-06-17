@@ -77,6 +77,7 @@ def pack_batch(segments, tokens_per_batch, pad_token_id=0, device=None):
       input_ids    [1, tokens_per_batch]  (long)
       labels       [1, tokens_per_batch]  (long, pad positions are -100)
       segment_ids  [1, tokens_per_batch]  (long, independent document segments; pad is -1)
+      token_count  number of non-padding training positions
 
     """
 
@@ -92,7 +93,8 @@ def pack_batch(segments, tokens_per_batch, pad_token_id=0, device=None):
         labels.extend(s[1:])
         segment_ids.extend([segment_id] * L)
 
-    pad_len = tokens_per_batch - len(input_ids)
+    token_count = len(input_ids)
+    pad_len = tokens_per_batch - token_count
     assert pad_len >= 0 # Caller should ensure segments fit in tokens_per_batch, impossible for batch_iterator as caller.
     input_ids.extend([pad_token_id] * pad_len)
     labels.extend([-100] * pad_len)
@@ -113,7 +115,7 @@ def pack_batch(segments, tokens_per_batch, pad_token_id=0, device=None):
         segment_ids_t = segment_ids_t.to(device, non_blocking=use_pinned_memory)
 
     # FlexAttention expects batched tensors; each loader batch is one packed row.
-    return input_ids_t.unsqueeze(0), labels_t.unsqueeze(0), segment_ids_t.unsqueeze(0)
+    return input_ids_t.unsqueeze(0), labels_t.unsqueeze(0), segment_ids_t.unsqueeze(0), token_count
 
 
 def batch_iterator(
@@ -123,7 +125,7 @@ def batch_iterator(
     max_sl: int = 512,
     token_col: str = "input_ids",
     pad_token_id: int = 0,
-    drop_last: bool = True,
+    drop_last: bool = True, # We need this for multi-gpu to ensure all ranks have the same number of batches.
     device="cuda",
     seed=None,
     rank: int = 0,
@@ -173,7 +175,7 @@ if __name__ == "__main__":
     parquet_file = os.path.join(get_base_dir(), "data", "tokenized", "climbmix100Mwords.parquet")
     batch_count = 5
     i = 0
-    for input_ids, labels, segment_ids in batch_iterator(
+    for input_ids, labels, segment_ids, token_count in batch_iterator(
         parquet_file,
         tokens_per_batch=8192,
         max_sl=256,
@@ -181,6 +183,6 @@ if __name__ == "__main__":
         drop_last=True
     ):
         i += 1
-        print(input_ids.shape, labels.shape, segment_ids.shape)
+        print(input_ids.shape, labels.shape, segment_ids.shape, token_count)
         if i > batch_count:
             break
