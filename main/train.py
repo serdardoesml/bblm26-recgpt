@@ -196,7 +196,7 @@ def train(cfg: TrainConfig):
     micro_step = 0
     tokens_seen = 0
     step_tokens_accum = 0
-    loss_accum = torch.tensor(0, device=device) # We have to accumulate this stuff to support grad acc
+    loss_accum = torch.tensor(0.0, device=device) # We have to accumulate this stuff to support grad acc
     step_start_time = time.time()
     optimizer.zero_grad(set_to_none=True)
     model.train()
