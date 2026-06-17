@@ -227,7 +227,6 @@ def train(cfg: TrainConfig):
 
             if ddp:
                 # Need to convert token count to tensor to all_reduce.
-                # After all that effort to avoid gpu syncing every step, this token count thing has defeated me.
                 # Technically there is no reason why token count sync has to go through the gpu... but here we are. (Only matters for multi-gpu anyways)
                 step_tokens_t = torch.tensor(step_tokens_accum, device=device, dtype=torch.long)
                 dist.all_reduce(step_tokens_t)
