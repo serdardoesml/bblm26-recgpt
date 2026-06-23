@@ -17,6 +17,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--sequence-len", type=int, default=TrainConfig.sequence_len)
     parser.add_argument("--warmup-ratio", type=float, default=TrainConfig.warmup_ratio)
     parser.add_argument("--cooldown-ratio", type=float, default=TrainConfig.cooldown_ratio)
+    parser.add_argument("--nl-mult", type=float, default=TrainConfig.nl_mult)
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--hidden-size", type=int, default=model_defaults.hidden_size)
@@ -46,6 +47,7 @@ def parse_args() -> TrainConfig:
         sequence_len=args.sequence_len,
         warmup_ratio=args.warmup_ratio,
         cooldown_ratio=args.cooldown_ratio,
+        nl_mult=args.nl_mult,
         torch_compile=not args.no_compile,
         use_wandb=args.wandb,
     )

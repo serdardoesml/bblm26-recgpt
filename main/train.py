@@ -49,7 +49,7 @@ class TrainConfig:
     cooldown_ratio: float = 0.2
     max_grad_norm: float = 2.0 # Not sure this is needed but may help with stability
 
-    nl_mult: float = 1.0 # Multiplier for the NL aux loss
+    nl_mult: float = 10.0 # Multiplier for the NL aux loss
 
     torch_compile: bool = True
     use_wandb: bool = False
