@@ -234,6 +234,7 @@ class RecGPTForCausalLM(PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None, # But we also support attention_mask for compatibility with HF transformers stack.
         labels: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
+        return_hidden_and_embed: Optional[bool] = None,
         **kwargs,
     ) -> CausalLMOutput | tuple[torch.Tensor, ...]:
         # Training uses one packed, block-masked sequence per microbatch, so B is always 1.
@@ -308,6 +309,8 @@ class RecGPTForCausalLM(PreTrainedModel):
         x = self.embed_tokens(input_ids)
         if self.use_factorized:
             x = self.e_to_h(x)
+        if return_hidden_and_embed:
+            e = x
         for attn_norm, mlp_norm in zip(self.attn_norms, self.mlp_norms):
             # We do pre-norm and QK norm.
             # We used to do a Gemma 3 style post-norm, but removed it to improve stability
@@ -316,13 +319,15 @@ class RecGPTForCausalLM(PreTrainedModel):
             x = x + self.attn(attn_norm(x), position_ids, block_mask, backend)
             x = x + self.mlp(mlp_norm(x))
 
-        x = self.final_norm(x)
+        x = self.final_norm(x) # Final normalized hidden state before output projection.
         if self.use_factorized:
-            x = self.h_to_e(x)
-        if hasattr(self, "lm_head"):
-            logits = self.lm_head(x)
+            y = self.h_to_e(x)
         else:
-            logits = F.linear(x, self.embed_tokens.weight)
+            y = x
+        if hasattr(self, "lm_head"):
+            logits = self.lm_head(y)
+        else:
+            logits = F.linear(y, self.embed_tokens.weight)
 
         loss = None
         if labels is not None:
@@ -332,5 +337,7 @@ class RecGPTForCausalLM(PreTrainedModel):
         if use_return_dict:
             return CausalLMOutput(loss=loss, logits=logits)
         if loss is None:
-            return (logits,)
+            return (logits,) # [batch, seq_len, vocab_size]
+        if return_hidden_and_embed:
+            return (loss, logits, x, e) # logits: [batch, seq_len, vocab_size], x: [batch, seq_len, hidden_size], e: [batch, seq_len, hidden_size]
         return (loss, logits)

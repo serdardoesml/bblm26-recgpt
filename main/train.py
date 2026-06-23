@@ -7,6 +7,8 @@ import shutil
 import time
 from dataclasses import dataclass, field
 
+from typing import Optional
+
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -15,6 +17,7 @@ from transformers import AutoTokenizer
 from .common import get_base_dir, print0, setup_distributed
 from .dataloader import batch_iterator, count_dataset_tokens
 from .model import RecGPTConfig, RecGPTForCausalLM
+from .nl_aux_model import NL_Aux_Model, NL_Aux_Config
 from .optimizer import SingleDeviceAuroraWithAuxAdam
 
 
@@ -46,6 +49,8 @@ class TrainConfig:
     cooldown_ratio: float = 0.2
     max_grad_norm: float = 2.0 # Not sure this is needed but may help with stability
 
+    nl_mult: float = 1.0 # Multiplier for the NL aux loss
+
     torch_compile: bool = True
     use_wandb: bool = False
     wandb_project: str = "bblm26-recgpt"
@@ -59,7 +64,7 @@ def unwrap_model(model: torch.nn.Module) -> RecGPTForCausalLM:
     return model
 
 # TODO: Check and maybe simplify this
-def build_optimizer(model: RecGPTForCausalLM, cfg: TrainConfig):
+def build_optimizer(cfg: TrainConfig, model: RecGPTForCausalLM, nl_model: Optional[NL_Aux_Model]):
     adam_params = []
     muon_params = []
     for name, p in model.named_parameters():
@@ -69,6 +74,9 @@ def build_optimizer(model: RecGPTForCausalLM, cfg: TrainConfig):
             adam_params.append(p)
         else:
             muon_params.append(p)
+    
+    if nl_model:
+        muon_params.extend(nl_model.parameters())
 
     return SingleDeviceAuroraWithAuxAdam(
         [
@@ -151,12 +159,22 @@ def train(cfg: TrainConfig):
     cfg.model_config.pad_token_id = tokenizer.pad_token_id
     cfg.model_config.max_position_embeddings = cfg.sequence_len
 
+    # Model initialization
     raw_model = RecGPTForCausalLM(cfg.model_config).to(device)
     model: torch.nn.Module = torch.compile(raw_model) if cfg.torch_compile else raw_model
     if ddp:
         model = DDP(model, device_ids=[local_rank], broadcast_buffers=False)
 
-    optimizer = build_optimizer(raw_model, cfg)
+    # NextLat Aux model
+    # Only used for auxiliary loss during training, discarded after.
+    # Not exposed to saved model checkpoints, as it is not used for inference.
+    nl_cfg = NL_Aux_Config(cfg.model_config.hidden_size)
+    nl_raw_model = NL_Aux_Model(nl_cfg).to(device)
+    nl_model: torch.nn.Module = torch.compile(nl_raw_model) if cfg.torch_compile else nl_raw_model
+    if ddp:
+        nl_model = DDP(nl_model, device_ids=[local_rank], broadcast_buffers=False)
+
+    optimizer = build_optimizer(cfg, raw_model, nl_raw_model)
     dataset_tokens = count_dataset_tokens(parquet_path)
     epoch_tokens = dataset_tokens if cfg.max_tokens < 0 else min(cfg.max_tokens, dataset_tokens)
     target_tokens = epoch_tokens * cfg.epochs
@@ -197,6 +215,7 @@ def train(cfg: TrainConfig):
     tokens_seen = 0
     step_tokens_accum = 0
     loss_accum = torch.tensor(0.0, device=device) # We have to accumulate this stuff to support grad acc
+    nl_loss_accum = torch.tensor(0.0, device=device) # We have to accumulate this stuff to support grad acc
     step_start_time = time.time()
     optimizer.zero_grad(set_to_none=True)
     model.train()
@@ -214,11 +233,14 @@ def train(cfg: TrainConfig):
         )
         for input_ids, labels, segment_ids, token_count in iterator:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                out = model(input_ids=input_ids, segment_ids=segment_ids, labels=labels)
-                loss = out.loss / grad_acc
+                loss, logits, x, e = model(input_ids=input_ids, segment_ids=segment_ids, labels=labels, return_hidden_and_embed=True, return_dict=False)
+                loss = loss / grad_acc
+                nl_loss = nl_model(hidden=x, embeddings=e, segment_ids=segment_ids) / grad_acc
 
-            loss.backward()
             loss_accum += loss.detach() * grad_acc # We multiply by grad_acc as microbatch loss is averaged over tokens.
+            nl_loss_accum += nl_loss.detach() * grad_acc
+            loss += cfg.nl_mult * nl_loss
+            loss.backward()
             step_tokens_accum += token_count
             micro_step += 1
 
@@ -234,7 +256,10 @@ def train(cfg: TrainConfig):
             tokens_seen += step_tokens_accum
 
             if cfg.max_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(raw_model.parameters(), cfg.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    (p for group in optimizer.param_groups for p in group["params"]),
+                    cfg.max_grad_norm,
+                )
             optimizer.step()
             set_lr(
                 optimizer,
@@ -251,10 +276,12 @@ def train(cfg: TrainConfig):
             step_elapsed = max(now - step_start_time, 1e-9)
             if rank == 0 and step % cfg.log_every == 0:
                 loss_accum_float = loss_accum.item()
+                nl_loss_accum_float = nl_loss_accum.item()
                 metrics = {
                     "step": step,
                     "epoch": epoch + 1,
                     "loss": loss_accum_float,
+                    "nl_loss": nl_loss_accum_float,
                     "lr_embed": optimizer.param_groups[0]["lr"],
                     "lr_block": optimizer.param_groups[1]["lr"],
                     "tokens_seen": tokens_seen,
@@ -265,6 +292,7 @@ def train(cfg: TrainConfig):
                     f"Epoch {epoch + 1}/{cfg.epochs} "
                     f"Step {step} "
                     f"training loss: {loss_accum_float:.3f} "
+                    f"nextlat loss: {nl_loss_accum_float:.3f} "
                     f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
                     f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
                     f"step_time {step_elapsed:.2f}s "
@@ -275,6 +303,7 @@ def train(cfg: TrainConfig):
 
             step += 1
             loss_accum.zero_()
+            nl_loss_accum.zero_()
             step_tokens_accum = 0
             step_start_time = now
             if tokens_seen >= target_tokens:
