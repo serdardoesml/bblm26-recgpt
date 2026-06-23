@@ -12,7 +12,7 @@ class NL_Aux_Config:
     intermediate_size: int = 640 # MLP intermediate dimension
     mlp_count: int = 2 # MLP layer count
 
-class Res_MLP(nn.Module): # Coped MLP definition from model, added residual connection, not re-using to allow for flexibility
+class MLP(nn.Module): # Coped MLP definition from model, not re-using to allow for flexibility
     def __init__(self, config: NL_Aux_Config):
         super().__init__()
         self.up = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
@@ -22,7 +22,7 @@ class Res_MLP(nn.Module): # Coped MLP definition from model, added residual conn
         nn.init.zeros_(self.down.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.down(F.relu(self.up(x)).square())
+        return self.down(F.relu(self.up(x)).square())
 
 class NL_Aux_Model(nn.Module):
     # Takes in the normalized hidden states of the main model along with the embeddings of the next token, and predicts the hidden states of the next token.
@@ -38,7 +38,7 @@ class NL_Aux_Model(nn.Module):
             self.out_proj = nn.Linear(config.hidden_size, config.input_hidden_size, bias=False)
         else:
             self.out_proj = nn.Identity()
-        self.mlps = nn.Sequential(*[Res_MLP(config) for _ in range(config.mlp_count)])
+        self.mlps = nn.Sequential(*[MLP(config) for _ in range(config.mlp_count)])
 
     def forward(self, hidden, embeddings, segment_ids): 
         # Inputs expected in shape [batch, seq_len, hidden_size], except segment IDs which are [batch, seq_len].
@@ -50,7 +50,7 @@ class NL_Aux_Model(nn.Module):
 
         x = torch.cat([hidden[:, :-1], embeddings[:, 1:].detach()], dim=-1) # Concatenate hidden with next token's embedding
         x = self.input_proj(x)
-        x = self.mlps(x)
+        x = self.mlps(x) + hidden[:, :-1] # Residual connection
         x = self.out_proj(x)
 
         pred = x[valid_transition]
