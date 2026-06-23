@@ -17,9 +17,6 @@ class MLP(nn.Module): # Coped MLP definition from model, not re-using to allow f
         super().__init__()
         self.up = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.down = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
-        # Standard dense ReLU^2 MLP with zero init output
-        # (Idea from modded-nanogpt speedrun, empirically seems to work well).
-        nn.init.zeros_(self.down.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.down(F.relu(self.up(x)).square())
