@@ -237,8 +237,8 @@ def train(cfg: TrainConfig):
                 loss = loss / grad_acc
                 nl_loss = nl_model(hidden=x, embeddings=e, segment_ids=segment_ids) / grad_acc
 
-            loss_accum += loss.detach() * grad_acc # We multiply by grad_acc as microbatch loss is averaged over tokens.
-            nl_loss_accum += nl_loss.detach() * grad_acc
+            loss_accum += loss.detach()
+            nl_loss_accum += nl_loss.detach()
             loss += cfg.nl_mult * nl_loss
             loss.backward()
             step_tokens_accum += token_count
