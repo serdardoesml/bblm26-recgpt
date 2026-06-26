@@ -30,6 +30,9 @@ class TrainConfig:
     seed: int = 0
     data_seed: int = 0
 
+    # Note: Gradient accumulation is considered to be wasteful (https://arxiv.org/pdf/2507.07101)
+    # Tune for minimum batch size that is still efficient for your hardware, and adjust other hyperparameters accordingly.
+    # Accumulation is still useful for reproducibility.
     microbatch_tok: int = 32768 # Tokens per microbatch (before grad accumulation) per gpu
     total_batch_tok: int = 32768 # Tokens per gradient step. Must be a multiple of microbatch_tok * gpu count.
     sequence_len: int = 512
