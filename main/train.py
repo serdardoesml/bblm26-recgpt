@@ -45,6 +45,9 @@ class TrainConfig:
     min_lr_block: float = 0.0
     wd_adam: float = 0.005
     wd_muon: float = 0.1
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.95
+    muon_momentum: float = 0.95
     warmup_ratio: float = 0.0
     cooldown_ratio: float = 0.2
     max_grad_norm: float = 2.0 # Not sure this is needed but may help with stability
@@ -80,8 +83,8 @@ def build_optimizer(cfg: TrainConfig, model: RecGPTForCausalLM, nl_model: Option
 
     return SingleDeviceAuroraWithAuxAdam(
         [
-            {"params": adam_params, "lr": cfg.lr_embed, "use_muon": False, "weight_decay": cfg.wd_adam},
-            {"params": muon_params, "lr": cfg.lr_block, "use_muon": True, "weight_decay": cfg.wd_muon},
+            {"params": adam_params, "lr": cfg.lr_embed, "use_muon": False, "weight_decay": cfg.wd_adam, "betas": (cfg.adam_beta1, cfg.adam_beta2)},
+            {"params": muon_params, "lr": cfg.lr_block, "use_muon": True, "weight_decay": cfg.wd_muon, "momentum": cfg.muon_momentum},
         ]
     )
 

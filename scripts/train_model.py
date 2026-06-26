@@ -22,6 +22,9 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--lr-block", type=float, default=train_defaults.lr_block)
     parser.add_argument("--wd-adam", type=float, default=train_defaults.wd_adam)
     parser.add_argument("--wd-muon", type=float, default=train_defaults.wd_muon)
+    parser.add_argument("--adam-beta1", type=float, default=train_defaults.adam_beta1)
+    parser.add_argument("--adam-beta2", type=float, default=train_defaults.adam_beta2)
+    parser.add_argument("--muon-momentum", type=float, default=train_defaults.muon_momentum)
     parser.add_argument("--warmup-ratio", type=float, default=train_defaults.warmup_ratio)
     parser.add_argument("--cooldown-ratio", type=float, default=train_defaults.cooldown_ratio)
     parser.add_argument("--max-grad-norm", type=float, default=train_defaults.max_grad_norm)
@@ -62,6 +65,9 @@ def parse_args() -> TrainConfig:
         lr_block=args.lr_block,
         wd_adam=args.wd_adam,
         wd_muon=args.wd_muon,
+        adam_beta1=args.adam_beta1,
+        adam_beta2=args.adam_beta2,
+        muon_momentum=args.muon_momentum,
         warmup_ratio=args.warmup_ratio,
         cooldown_ratio=args.cooldown_ratio,
         max_grad_norm=args.max_grad_norm,
