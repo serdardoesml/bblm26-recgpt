@@ -2,6 +2,8 @@ Training pipeline for my BabyLM 2026 submission. Minimal version of the original
 
 Built primarily for Hopper GPUs and FA4, but should be compatible with anything that supports the FlexAttention triton backend (including AMD ROCm).
 
+Unfortunately inference is slow with FlexAttention when not using torch.compile, which can make some evals run slower. However training (and inference when compiled) is blazing fast.
+
 Train the `bblm10M-bpe` tokenizer:
 
 ```bash
