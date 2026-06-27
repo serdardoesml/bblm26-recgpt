@@ -280,37 +280,41 @@ def train(cfg: TrainConfig):
 
             now = time.time()
             step_elapsed = max(now - step_start_time, 1e-9)
-            if rank == 0 and step % cfg.log_every == 0:
-                loss_accum_float = loss_accum.item()
-                nl_loss_accum_float = nl_loss_accum.item()
-                metrics = {
-                    "step": step,
-                    "epoch": epoch + 1,
-                    "loss": loss_accum_float,
-                    "nl_loss": nl_loss_accum_float,
-                    "lr_embed": optimizer.param_groups[0]["lr"],
-                    "lr_block": optimizer.param_groups[1]["lr"],
-                    "tokens_seen": tokens_seen,
-                    "tokens_per_sec": step_tokens_accum / step_elapsed,
-                    "step_time": step_elapsed,
-                }
-                print(
-                    f"Epoch {epoch + 1}/{cfg.epochs} "
-                    f"Step {step} "
-                    f"training loss: {loss_accum_float:.3f} "
-                    f"nextlat loss: {nl_loss_accum_float:.3f} "
-                    f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
-                    f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
-                    f"step_time {step_elapsed:.2f}s "
-                    f"tok/s {step_tokens_accum / step_elapsed:.0f} "
-                )
-                if wandb_run is not None:
-                    wandb_run.log(metrics, step=tokens_seen)
+            if (step + 1) % cfg.log_every == 0:
+                if rank != 0: # To be safe with non-zero ranks
+                    loss_accum.zero_()
+                    nl_loss_accum.zero_()
+                else:
+                    loss_accum_float = loss_accum.item() / cfg.log_every
+                    nl_loss_accum_float = nl_loss_accum.item() / cfg.log_every
+                    loss_accum.zero_()
+                    nl_loss_accum.zero_()
+                    metrics = {
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "loss": loss_accum_float,
+                        "nl_loss": nl_loss_accum_float,
+                        "lr_embed": optimizer.param_groups[0]["lr"],
+                        "lr_block": optimizer.param_groups[1]["lr"],
+                        "tokens_seen": tokens_seen,
+                        "tokens_per_sec": step_tokens_accum / step_elapsed,
+                        "step_time": step_elapsed,
+                    }
+                    print(
+                        f"Epoch {epoch + 1}/{cfg.epochs} "
+                        f"Step {step} "
+                        f"training loss: {loss_accum_float:.3f} "
+                        f"nextlat loss: {nl_loss_accum_float:.3f} "
+                        f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
+                        f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
+                        f"step_time {step_elapsed:.2f}s "
+                        f"tok/s {step_tokens_accum / step_elapsed:.0f} "
+                    )
+                    if wandb_run is not None:
+                        wandb_run.log(metrics, step=tokens_seen)
 
             step += 1
-            loss_accum.zero_()
-            nl_loss_accum.zero_()
-            step_tokens_accum = 0
+            step_tokens_accum = 0 # Tok/s and step time reporting not averaged
             step_start_time = now
             if tokens_seen >= target_tokens:
                 break
