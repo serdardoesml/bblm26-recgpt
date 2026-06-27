@@ -47,8 +47,8 @@ class NL_Aux_Model(nn.Module):
 
         x = torch.cat([hidden[:, :-1], embeddings[:, 1:].detach()], dim=-1) # Concatenate hidden with next token's embedding
         x = self.input_proj(x)
-        x = self.mlps(x) + hidden[:, :-1] # Residual connection
-        x = self.out_proj(x)
+        x = self.mlps(x)
+        x = self.out_proj(x) + hidden[:, :-1] # Residual connection
 
         pred = x[valid_transition]
         target = hidden[:, 1:][valid_transition].detach()
