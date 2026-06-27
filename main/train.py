@@ -49,7 +49,7 @@ class TrainConfig:
     wd_adam: float = 0.005
     wd_muon: float = 0.1
     adam_beta1: float = 0.9
-    adam_beta2: float = 0.95
+    adam_beta2: float = 0.997
     muon_momentum: float = 0.95
     warmup_ratio: float = 0.0
     cooldown_ratio: float = 0.2
@@ -174,7 +174,7 @@ def train(cfg: TrainConfig):
     # NextLat Aux model
     # Only used for auxiliary loss during training, discarded after.
     # Not exposed to saved model checkpoints, as it is not used for inference.
-    nl_cfg = NL_Aux_Config(cfg.model_config.hidden_size)
+    nl_cfg = NL_Aux_Config(cfg.model_config.hidden_size, 64, 64, 2)
     nl_raw_model = NL_Aux_Model(nl_cfg).to(device)
     nl_model: torch.nn.Module = torch.compile(nl_raw_model) if cfg.torch_compile else nl_raw_model
     if ddp:
