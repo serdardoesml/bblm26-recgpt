@@ -280,7 +280,8 @@ def train(cfg: TrainConfig):
 
             now = time.time()
             step_elapsed = max(now - step_start_time, 1e-9)
-            if (step + 1) % cfg.log_every == 0:
+            step += 1
+            if step % cfg.log_every == 0:
                 if rank != 0: # To be safe with non-zero ranks
                     loss_accum.zero_()
                     nl_loss_accum.zero_()
@@ -313,7 +314,6 @@ def train(cfg: TrainConfig):
                     if wandb_run is not None:
                         wandb_run.log(metrics, step=tokens_seen)
 
-            step += 1
             step_tokens_accum = 0 # Tok/s and step time reporting not averaged
             step_start_time = now
             if tokens_seen >= target_tokens:
