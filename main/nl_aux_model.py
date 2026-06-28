@@ -9,8 +9,8 @@ from dataclasses import dataclass
 class NL_Aux_Config:
     input_hidden_size: int # Input size (Concatenation of hidden and next token embedding vectors)
     hidden_size: int = -1 # Residual dimension (Projected down from concatenated input), if set to -1 defaults to input_hidden_size
-    intermediate_size: int = 5120 # MLP intermediate dimension
-    mlp_count: int = 2 # MLP layer count
+    intermediate_size: int = 2560 # MLP intermediate dimension
+    mlp_count: int = 4 # MLP layer count
 
 class MLP(nn.Module): # Coped MLP definition from model, not re-using to allow for flexibility
     def __init__(self, config: NL_Aux_Config):
@@ -49,6 +49,7 @@ class NL_Aux_Model(nn.Module):
         x = self.input_proj(x)
         x = self.mlps(x)
         x = self.out_proj(x) + hidden[:, :-1] # Residual connection
+        # Note: The residual makes it equivalent to predicting the diff between the next and current hidden states.
 
         pred = x[valid_transition]
         target = hidden[:, 1:][valid_transition].detach()
