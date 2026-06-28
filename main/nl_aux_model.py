@@ -55,4 +55,4 @@ class NL_Aux_Model(nn.Module):
         if pred.numel() == 0:  # Return zero loss if no valid transitions
             return x.sum() * 0.0
 
-        return F.smooth_l1_loss(pred, target)
+        return F.smooth_l1_loss(pred, target, reduction="none").sum(dim=-1).mean() # Sum over hidden dim
