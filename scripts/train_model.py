@@ -32,6 +32,9 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--nl-depth", type=int, default=train_defaults.nl_depth)
     parser.add_argument("--nl-hidden", type=int, default=train_defaults.nl_hidden)
     parser.add_argument("--nl-intermediate", type=int, default=train_defaults.nl_intermediate)
+    parser.add_argument("--nl-lr", type=float, default=train_defaults.nl_lr)
+    parser.add_argument("--nl-wd", type=float, default=train_defaults.nl_wd)
+    parser.add_argument("--nl-momentum", type=float, default=train_defaults.nl_momentum)
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
@@ -78,6 +81,9 @@ def parse_args() -> TrainConfig:
         nl_depth=args.nl_depth,
         nl_hidden=args.nl_hidden,
         nl_intermediate=args.nl_intermediate,
+        nl_lr=args.nl_lr,
+        nl_wd=args.nl_wd,
+        nl_momentum=args.nl_momentum,
         torch_compile=not args.no_compile,
         use_wandb=args.wandb,
         wandb_project=args.wandb_project,

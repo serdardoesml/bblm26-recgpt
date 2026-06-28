@@ -44,8 +44,7 @@ class TrainConfig:
 
     lr_embed: float = 0.005
     lr_block: float = 0.02
-    min_lr_embed: float = 0.0 # Minimums are for cooldown, ignored during warmup
-    min_lr_block: float = 0.0
+    min_lr: float = 0.0 # Minimum for cooldown, ignored during warmup
     wd_adam: float = 0.005
     wd_muon: float = 0.1
     adam_beta1: float = 0.9
@@ -59,6 +58,9 @@ class TrainConfig:
     nl_depth: int = 1
     nl_hidden: int = -1 # Default -1 sets it equal to model hidden
     nl_intermediate: int = 5120
+    nl_lr: float = 0.02
+    nl_wd: float = 0.1
+    nl_momentum: float = 0.95
 
     torch_compile: bool = True
     use_wandb: bool = False
@@ -84,15 +86,16 @@ def build_optimizer(cfg: TrainConfig, model: RecGPTForCausalLM, nl_model: Option
         else:
             muon_params.append(p)
     
+    param_groups = [
+        {"params": adam_params, "lr": cfg.lr_embed, "use_muon": False, "weight_decay": cfg.wd_adam, "betas": (cfg.adam_beta1, cfg.adam_beta2)},
+        {"params": muon_params, "lr": cfg.lr_block, "use_muon": True, "weight_decay": cfg.wd_muon, "momentum": cfg.muon_momentum},
+    ]
     if nl_model:
-        muon_params.extend(nl_model.parameters())
+        param_groups.append(
+            {"params": list(nl_model.parameters()), "lr": cfg.nl_lr, "use_muon": True, "weight_decay": cfg.nl_wd, "momentum": cfg.nl_momentum},
+        )
 
-    return SingleDeviceAuroraWithAuxAdam(
-        [
-            {"params": adam_params, "lr": cfg.lr_embed, "use_muon": False, "weight_decay": cfg.wd_adam, "betas": (cfg.adam_beta1, cfg.adam_beta2)},
-            {"params": muon_params, "lr": cfg.lr_block, "use_muon": True, "weight_decay": cfg.wd_muon, "momentum": cfg.muon_momentum},
-        ]
-    )
+    return SingleDeviceAuroraWithAuxAdam(param_groups)
 
 # Simple function to calculate lr from current tokens seen.
 # We use token-based scheduling instead of step-based because of variable padding meaning we don't know exactly how many steps the dataset will be.
@@ -128,9 +131,9 @@ def set_lr(
     warmup_ratio: float,
     cooldown_ratio: float,
     base_lrs: list[float],
-    min_lrs: list[float],
+    min_lr: float,
 ):
-    for group, base_lr, min_lr in zip(optimizer.param_groups, base_lrs, min_lrs, strict=True):
+    for group, base_lr in zip(optimizer.param_groups, base_lrs, strict=True):
         group["lr"] = token_to_lr(
             tokens_seen, total_tokens, warmup_ratio, cooldown_ratio, base_lr, min_lr
         )
@@ -208,7 +211,7 @@ def train(cfg: TrainConfig):
         cfg.warmup_ratio,
         cfg.cooldown_ratio,
         base_lrs,
-        [cfg.min_lr_embed, cfg.min_lr_block],
+        cfg.min_lr,
     )
 
     wandb_run = None
@@ -282,7 +285,7 @@ def train(cfg: TrainConfig):
                 cfg.warmup_ratio,
                 cfg.cooldown_ratio,
                 base_lrs,
-                [cfg.min_lr_embed, cfg.min_lr_block],
+                cfg.min_lr,
             )
             optimizer.zero_grad(set_to_none=True)
 
@@ -305,6 +308,7 @@ def train(cfg: TrainConfig):
                         "nl_loss": nl_loss_accum_float,
                         "lr_embed": optimizer.param_groups[0]["lr"],
                         "lr_block": optimizer.param_groups[1]["lr"],
+                        "lr_nl": optimizer.param_groups[2]["lr"],
                         "tokens_seen": tokens_seen,
                         "tokens_per_sec": step_tokens_accum / step_elapsed,
                         "step_time": step_elapsed,
@@ -316,6 +320,7 @@ def train(cfg: TrainConfig):
                         f"nextlat loss: {nl_loss_accum_float:.3f} "
                         f"lr_embed {optimizer.param_groups[0]['lr']:.5g} "
                         f"lr_block {optimizer.param_groups[1]['lr']:.5g} "
+                        f"lr_nl {optimizer.param_groups[2]['lr']:.5g} "
                         f"step_time {step_elapsed:.2f}s "
                         f"tok/s {step_tokens_accum / step_elapsed:.0f} "
                     )
