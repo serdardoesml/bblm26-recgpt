@@ -31,6 +31,9 @@ class NL_Aux_Model(nn.Module):
         self.mid = nn.Linear(config.intermediate_size, config.intermediate_size, bias=False)
         self.down = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
+        nn.init.zeros_(self.down.weight)
+        nn.init.ones_(self.mid.weight)
+
     def forward(self, hidden, embeddings, segment_ids): 
         # Inputs expected in shape [batch, seq_len, hidden_size], except segment IDs which are [batch, seq_len].
         # Returns loss only
