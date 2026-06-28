@@ -174,7 +174,7 @@ def train(cfg: TrainConfig):
     # NextLat Aux model
     # Only used for auxiliary loss during training, discarded after.
     # Not exposed to saved model checkpoints, as it is not used for inference.
-    nl_cfg = NL_Aux_Config(cfg.model_config.hidden_size, 16, 16, 2)
+    nl_cfg = NL_Aux_Config(cfg.model_config.hidden_size)
     nl_raw_model = NL_Aux_Model(nl_cfg).to(device)
     nl_model: torch.nn.Module = torch.compile(nl_raw_model) if cfg.torch_compile else nl_raw_model
     if ddp:
