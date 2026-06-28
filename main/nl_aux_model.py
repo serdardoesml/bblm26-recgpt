@@ -9,7 +9,7 @@ from dataclasses import dataclass
 class NL_Aux_Config:
     input_hidden_size: int # Input size (Concatenation of hidden and next token embedding vectors)
     hidden_size: int = -1 # Residual dimension (Projected down from concatenated input), if set to -1 defaults to input_hidden_size
-    intermediate_size: int = 2560 # MLP intermediate dimension
+    intermediate_size: int = 5120 # MLP intermediate dimension
 
 class NL_Aux_Model(nn.Module):
     # Takes in the normalized hidden states of the main model along with the embeddings of the next token, and predicts the hidden states of the next token.
