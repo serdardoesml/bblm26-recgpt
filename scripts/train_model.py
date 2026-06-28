@@ -29,6 +29,9 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--cooldown-ratio", type=float, default=train_defaults.cooldown_ratio)
     parser.add_argument("--max-grad-norm", type=float, default=train_defaults.max_grad_norm)
     parser.add_argument("--nl-mult", type=float, default=train_defaults.nl_mult)
+    parser.add_argument("--nl-depth", type=int, default=train_defaults.nl_depth)
+    parser.add_argument("--nl-hidden", type=int, default=train_defaults.nl_hidden)
+    parser.add_argument("--nl-intermediate", type=int, default=train_defaults.nl_intermediate)
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
@@ -72,6 +75,9 @@ def parse_args() -> TrainConfig:
         cooldown_ratio=args.cooldown_ratio,
         max_grad_norm=args.max_grad_norm,
         nl_mult=args.nl_mult,
+        nl_depth=args.nl_depth,
+        nl_hidden=args.nl_hidden,
+        nl_intermediate=args.nl_intermediate,
         torch_compile=not args.no_compile,
         use_wandb=args.wandb,
         wandb_project=args.wandb_project,

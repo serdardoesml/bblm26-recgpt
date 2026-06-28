@@ -34,15 +34,8 @@ class NL_Aux_Model(nn.Module):
         nn.init.zeros_(self.down.weight)
         nn.init.ones_(self.mid.weight)
 
-    def forward(self, hidden, embeddings, segment_ids): 
-        # Inputs expected in shape [batch, seq_len, hidden_size], except segment IDs which are [batch, seq_len].
-        # Returns loss only
-        # We use detach for x+1 and h+1 to ensure gradients only flow through the previous tokens.
-
-        # Prevent cross-document and padding token prediction.
-        valid_transition = (segment_ids[:, :-1] >= 0) & (segment_ids[:, :-1] == segment_ids[:, 1:])
-
-        x = torch.cat([hidden[:, :-1], embeddings[:, 1:].detach()], dim=-1) # Concatenate hidden with next token's embedding
+    def predict_next(self, hidden, embeddings):
+        x = torch.cat([hidden, embeddings.detach()], dim=-1) # Concatenate hidden with next token's embedding
         x = self.input_proj(x)
 
         # 3-Layer MLP with GeLU activations
@@ -52,12 +45,38 @@ class NL_Aux_Model(nn.Module):
         x = F.gelu(x)
         x = self.down(x)
 
-        x = self.out_proj(x) + hidden[:, :-1] # Residual connection
+        x = self.out_proj(x) + hidden # Residual connection
         # Note: The residual makes it equivalent to predicting the diff between the next and current hidden states.
+        return x
 
-        pred = x[valid_transition]
-        target = hidden[:, 1:][valid_transition].detach()
-        if pred.numel() == 0:  # Return zero loss if no valid transitions
-            return x.sum() * 0.0
+    def forward(self, hidden, embeddings, segment_ids, depth: int = 1): 
+        # Inputs expected in shape [batch, seq_len, hidden_size], except segment IDs which are [batch, seq_len].
+        # Returns loss only
+        # We use detach for embeddings and targets to ensure gradients only flow backwards through the input hiddens.
+        assert depth >= 1
 
-        return F.smooth_l1_loss(pred, target, reduction="none").sum(dim=-1).mean() # Sum over hidden dim
+        current = hidden
+        valid = None
+        losses = []
+
+        for k in range(1, depth + 1):
+            if hidden.size(1) <= k:
+                break
+
+            x = self.predict_next(current[:, :-1], embeddings[:, k:])
+
+            # Prevent cross-document and padding token prediction across the full rollout path.
+            valid_transition = (segment_ids[:, k - 1:-1] >= 0) & (segment_ids[:, k - 1:-1] == segment_ids[:, k:])
+            valid = valid_transition if valid is None else valid[:, :-1] & valid_transition
+
+            pred = x[valid]
+            if pred.numel() > 0:
+                target = hidden[:, k:][valid].detach()
+                losses.append(F.smooth_l1_loss(pred, target, reduction="none").sum(dim=-1).mean()) # Sum over hidden dim
+
+            current = x
+
+        if not losses:  # Return zero loss if no valid transitions
+            return hidden.sum() * 0.0
+
+        return torch.stack(losses).mean()

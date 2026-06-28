@@ -56,6 +56,9 @@ class TrainConfig:
     max_grad_norm: float = 2.0 # Not sure this is needed but may help with stability
 
     nl_mult: float = 2.0 # Multiplier for the NL aux loss
+    nl_depth: int = 1
+    nl_hidden: int = -1 # Default -1 sets it equal to model hidden
+    nl_intermediate: int = 5120
 
     torch_compile: bool = True
     use_wandb: bool = False
@@ -174,7 +177,12 @@ def train(cfg: TrainConfig):
     # NextLat Aux model
     # Only used for auxiliary loss during training, discarded after.
     # Not exposed to saved model checkpoints, as it is not used for inference.
-    nl_cfg = NL_Aux_Config(cfg.model_config.hidden_size)
+    assert cfg.nl_depth >= 1 # To disable, set nl_mult to 0
+    nl_cfg = NL_Aux_Config(
+        input_hidden_size=cfg.model_config.hidden_size,
+        hidden_size=cfg.nl_hidden,
+        intermediate_size=cfg.nl_intermediate,
+    )
     nl_raw_model = NL_Aux_Model(nl_cfg).to(device)
     nl_model: torch.nn.Module = torch.compile(nl_raw_model) if cfg.torch_compile else nl_raw_model
     if ddp:
@@ -241,7 +249,7 @@ def train(cfg: TrainConfig):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 loss, logits, x, e = model(input_ids=input_ids, segment_ids=segment_ids, labels=labels, return_hidden_and_embed=True, return_dict=False)
                 loss = loss / grad_acc
-                nl_loss = nl_model(hidden=x, embeddings=e, segment_ids=segment_ids) / grad_acc
+                nl_loss = nl_model(hidden=x, embeddings=e, segment_ids=segment_ids, depth=cfg.nl_depth) / grad_acc
 
             loss_accum += loss.detach()
             nl_loss_accum += nl_loss.detach()
