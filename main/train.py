@@ -78,21 +78,28 @@ def unwrap_model(model: torch.nn.Module) -> RecGPTForCausalLM:
 def build_optimizer(cfg: TrainConfig, model: RecGPTForCausalLM, nl_model: Optional[NL_Aux_Model]):
     adam_params = []
     muon_params = []
-    for name, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        if p.ndim < 2 or "embed_tokens" in name or "lm_head" in name or "norm" in name or "e_to_h" in name or "h_to_e" in name:
-            adam_params.append(p)
-        else:
-            muon_params.append(p)
-    
+    nl_muon_params = []
+
+    param_sets = [(model.named_parameters(), muon_params)]
+    if nl_model is not None:
+        param_sets.append((nl_model.named_parameters(), nl_muon_params))
+
+    for named_params, matrix_params in param_sets:
+        for name, p in named_params:
+            if not p.requires_grad:
+                continue
+            if p.ndim < 2 or "embed_tokens" in name or "lm_head" in name or "norm" in name or "e_to_h" in name or "h_to_e" in name:
+                adam_params.append(p)
+            else:
+                matrix_params.append(p)
+
     param_groups = [
         {"params": adam_params, "lr": cfg.lr_embed, "use_muon": False, "weight_decay": cfg.wd_adam, "betas": (cfg.adam_beta1, cfg.adam_beta2)},
         {"params": muon_params, "lr": cfg.lr_block, "use_muon": True, "weight_decay": cfg.wd_muon, "momentum": cfg.muon_momentum},
     ]
-    if nl_model:
+    if nl_muon_params:
         param_groups.append(
-            {"params": list(nl_model.parameters()), "lr": cfg.nl_lr, "use_muon": True, "weight_decay": cfg.nl_wd, "momentum": cfg.nl_momentum},
+            {"params": nl_muon_params, "lr": cfg.nl_lr, "use_muon": True, "weight_decay": cfg.nl_wd, "momentum": cfg.nl_momentum},
         )
 
     return SingleDeviceAuroraWithAuxAdam(param_groups)
