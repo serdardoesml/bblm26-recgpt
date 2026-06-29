@@ -34,6 +34,8 @@ class NL_Aux_Model(nn.Module):
         nn.init.zeros_(self.down.weight)
         nn.init.ones_(self.mid.weight)
 
+        self.final_norm = nn.Parameter(torch.ones(config.input_hidden_size))
+
     def predict_next(self, hidden, embeddings):
         x = torch.cat([hidden, embeddings.detach()], dim=-1) # Concatenate hidden with next token's embedding
         x = self.input_proj(x)
@@ -45,7 +47,7 @@ class NL_Aux_Model(nn.Module):
         x = F.gelu(x)
         x = self.down(x)
 
-        x = self.out_proj(x) + hidden # Residual connection
+        x = F.rms_norm(self.out_proj(x) + hidden, (x.size(-1),), self.final_norm, 1e-6) # Residual connection
         # Note: The residual makes it equivalent to predicting the diff between the next and current hidden states.
         return x
 
