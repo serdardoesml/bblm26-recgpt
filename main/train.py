@@ -153,6 +153,7 @@ def config_to_json(cfg: TrainConfig) -> dict:
 
 
 def save_hf_checkpoint(model: RecGPTForCausalLM, tokenizer: AutoTokenizer, out_dir):
+    model.config.max_position_embeddings = max(model.config.max_position_embeddings, RecGPTConfig().max_position_embeddings)
     model.config.auto_map = {
         "AutoConfig": "modeling_recgpt.RecGPTConfig",
         "AutoModelForCausalLM": "modeling_recgpt.RecGPTForCausalLM",

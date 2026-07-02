@@ -21,7 +21,7 @@ class RecGPTConfig(PretrainedConfig):
         head_dim: int = 64,
         intermediate_size: int = 10240,
         recursive_depth: int = 16,
-        max_position_embeddings: int = 256,
+        max_position_embeddings: int = 1024,
         pad_token_id: int = 0, # Padding is determined by segment_ids, this is only used for embeddings/HF metadata.
         tie_word_embeddings: bool = False, # Tied embeddings greatly hurt performance for recursive models.
         **kwargs,
