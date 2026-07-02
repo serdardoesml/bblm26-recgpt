@@ -234,6 +234,7 @@ class RecGPTForCausalLM(PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None, # But we also support attention_mask for compatibility with HF transformers stack.
         labels: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
         return_hidden_and_embed: Optional[bool] = None,
         **kwargs,
     ) -> CausalLMOutput | tuple[torch.Tensor, ...]:
@@ -334,8 +335,9 @@ class RecGPTForCausalLM(PreTrainedModel):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
 
         use_return_dict = self.config.use_return_dict if return_dict is None else return_dict
+        output_hidden_states = self.config.output_hidden_states if output_hidden_states is None else output_hidden_states
         if use_return_dict:
-            return CausalLMOutput(loss=loss, logits=logits)
+            return CausalLMOutput(loss=loss, logits=logits, hidden_states=(x,) if output_hidden_states else None)
         if loss is None:
             return (logits,) # [batch, seq_len, vocab_size]
         if return_hidden_and_embed:
