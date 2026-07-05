@@ -8,6 +8,9 @@ and prevent individual documents from dominating the batch.
 We do not split a segment just to fill the remaining space in a microbatch.
 Instead, each packed row is padded to tokens_per_batch with labels=-100 and
 segment_ids=-1. This keeps shapes fixed while preserving hard document boundaries.
+
+Note: For DDP, we form groups of world_size packed rows and each rank yields its row from that group.
+tokens_per_batch is still per-rank microbatch size.
 """
 
 import os
@@ -125,7 +128,6 @@ def batch_iterator(
     max_sl: int = 512,
     token_col: str = "input_ids",
     pad_token_id: int = 0,
-    drop_last: bool = True, # We need this for multi-gpu to ensure all ranks have the same number of batches.
     device="cuda",
     seed=None,
     rank: int = 0,
@@ -140,15 +142,16 @@ def batch_iterator(
     If the next segment would exceed the token budget, the current row is padded
     to tokens_per_batch and yielded. Segments are never split by batch packing.
 
-    If world_size is more than 1, each rank yields its own strided subset of batches. 
-    Simple and deterministic way to support multi-gpu.
+    In DDP, we form groups of world_size packed rows and each rank yields its
+    row from that group. Incomplete trailing rows are always dropped.
     """
 
     assert max_sl <= tokens_per_batch
+    assert 0 <= rank < world_size
 
     buf: list[list[int]] = []
     tok = 0  # sum of (len(chunk)-1) in buf
-    batch_idx = 0
+    rank_group: list[list[list[int]]] = []
 
     for chunk in parquet_doc_segments(parquet_path, token_col=token_col, T=max_sl, seed=seed):
         seglen = len(chunk) - 1
@@ -156,18 +159,18 @@ def batch_iterator(
             continue
 
         if buf and tok + seglen > tokens_per_batch:
-            if batch_idx % world_size == rank:
+            if world_size == 1:
                 yield pack_batch(buf, tokens_per_batch=tokens_per_batch, pad_token_id=pad_token_id, device=device)
-            batch_idx += 1
-            buf.clear()
+            else:
+                rank_group.append(buf)
+                if len(rank_group) == world_size:
+                    yield pack_batch(rank_group[rank], tokens_per_batch=tokens_per_batch, pad_token_id=pad_token_id, device=device)
+                    rank_group.clear()
+            buf = []
             tok = 0
 
         buf.append(chunk)
         tok += seglen
-
-    if buf and not drop_last:
-        if batch_idx % world_size == rank:
-            yield pack_batch(buf, tokens_per_batch=tokens_per_batch, pad_token_id=pad_token_id, device=device)
 
 
 # DEBUG
@@ -180,7 +183,6 @@ if __name__ == "__main__":
         tokens_per_batch=8192,
         max_sl=256,
         token_col="input_ids",
-        drop_last=True
     ):
         i += 1
         print(input_ids.shape, labels.shape, segment_ids.shape, token_count)
