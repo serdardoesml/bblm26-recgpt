@@ -17,6 +17,10 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--total-batch-tok", type=int, default=train_defaults.total_batch_tok)
     parser.add_argument("--sequence-len", type=int, default=train_defaults.sequence_len)
     parser.add_argument("--epochs", type=int, default=train_defaults.epochs)
+    checkpoint_group = parser.add_mutually_exclusive_group()
+    checkpoint_group.add_argument("--checkpoint-strict", dest="checkpoint_track", action="store_const", const="strict")
+    checkpoint_group.add_argument("--checkpoint-strict-small", dest="checkpoint_track", action="store_const", const="strict-small")
+    parser.set_defaults(checkpoint_track=train_defaults.checkpoint_track)
     parser.add_argument("--max-tokens", type=int, default=train_defaults.max_tokens)
     parser.add_argument("--lr-embed", type=float, default=train_defaults.lr_embed)
     parser.add_argument("--lr-block", type=float, default=train_defaults.lr_block)
@@ -66,6 +70,7 @@ def parse_args() -> TrainConfig:
         total_batch_tok=args.total_batch_tok,
         sequence_len=args.sequence_len,
         epochs=args.epochs,
+        checkpoint_track=args.checkpoint_track,
         max_tokens=args.max_tokens,
         lr_embed=args.lr_embed,
         lr_block=args.lr_block,

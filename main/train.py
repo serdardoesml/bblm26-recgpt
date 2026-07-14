@@ -37,9 +37,10 @@ class TrainConfig:
     total_batch_tok: int = 32768 # Tokens per gradient step. Must be a multiple of microbatch_tok * gpu count.
     sequence_len: int = 512
     epochs: int = 10
+    checkpoint_track: Optional[str] = None
 
     # Token limit (per epoch), -1 means use the entire dataset.
-    # Note: Don't use this for multi epoch training on a subset, as each epoch will see a different subset of the data due to shuffling.
+    # Note: Don't use this for multi epoch training on a subset, as it will not reset the dataloader and use the same data.
     max_tokens: int = -1 
 
     lr_embed: float = 0.005
@@ -152,7 +153,22 @@ def config_to_json(cfg: TrainConfig) -> dict:
     return out
 
 
-def save_hf_checkpoint(model: RecGPTForCausalLM, tokenizer: AutoTokenizer, out_dir):
+def checkpoint_schedule(track: Optional[str], epoch_tokens: int) -> tuple[int, list[tuple[int, int]]]:
+    if track is None:
+        return 0, []
+    if track == "strict-small":
+        words_per_epoch = 10 # Million words per epoch
+        marks = range(1, 10)
+    elif track == "strict":
+        words_per_epoch = 100 # Million words per epoch
+        marks = (*range(1, 10), *range(10, 100, 10))
+    else:
+        raise ValueError(f"unknown checkpoint track: {track}")
+    return words_per_epoch, [(mark, math.ceil(epoch_tokens * mark / words_per_epoch)) for mark in marks]
+
+
+def save_checkpoint(model: RecGPTForCausalLM, tokenizer: AutoTokenizer, cfg: TrainConfig, out_dir):
+    out_dir.mkdir(parents=True, exist_ok=True)
     model.config.max_position_embeddings = max(model.config.max_position_embeddings, RecGPTConfig().max_position_embeddings)
     model.config.auto_map = {
         "AutoConfig": "modeling_recgpt.RecGPTConfig",
@@ -161,6 +177,8 @@ def save_hf_checkpoint(model: RecGPTForCausalLM, tokenizer: AutoTokenizer, out_d
     model.save_pretrained(out_dir)
     tokenizer.save_pretrained(out_dir)
     shutil.copyfile(get_base_dir() / "main" / "model.py", out_dir / "modeling_recgpt.py")
+    with (out_dir / "train_config.json").open("w", encoding="utf-8") as f:
+        json.dump(config_to_json(cfg), f, indent=2)
 
 
 def train(cfg: TrainConfig):
@@ -203,6 +221,7 @@ def train(cfg: TrainConfig):
     dataset_tokens = count_dataset_tokens(parquet_path)
     epoch_tokens = dataset_tokens if cfg.max_tokens < 0 else min(cfg.max_tokens, dataset_tokens)
     target_tokens = epoch_tokens * cfg.epochs
+    checkpoint_words_per_epoch, first_epoch_checkpoints = checkpoint_schedule(cfg.checkpoint_track, epoch_tokens)
     global_microbatch_tok = cfg.microbatch_tok * world_size
     if cfg.total_batch_tok < global_microbatch_tok or cfg.total_batch_tok % global_microbatch_tok != 0:
         raise ValueError("total_batch_tok must be a multiple of microbatch_tok * world_size.")
@@ -244,6 +263,13 @@ def train(cfg: TrainConfig):
     step_start_time = time.time()
     optimizer.zero_grad(set_to_none=True)
     model.train()
+
+    def save_model(out_dir):
+        if rank == 0:
+            save_checkpoint(unwrap_model(model), tokenizer, cfg, out_dir)
+            print(f"saved model to {out_dir}")
+        if ddp:
+            dist.barrier()
 
     for epoch in range(cfg.epochs if cfg.max_tokens < 0 else 10**12):
         iterator = batch_iterator(
@@ -336,22 +362,21 @@ def train(cfg: TrainConfig):
                         wandb_run.log(metrics, step=tokens_seen)
 
             step_tokens_accum = 0 # Tok/s and step time reporting not averaged
+            while first_epoch_checkpoints and tokens_seen >= first_epoch_checkpoints[0][1]:
+                mark, _ = first_epoch_checkpoints.pop(0)
+                save_model(root / "models" / f"{cfg.run_name}-checkpoints" / f"chck_{mark}M")
+                now = time.time()
             step_start_time = now
             if tokens_seen >= target_tokens:
                 break
+        if checkpoint_words_per_epoch:
+            mark = checkpoint_words_per_epoch * (epoch + 1)
+            save_model(root / "models" / f"{cfg.run_name}-checkpoints" / f"chck_{mark}M")
+            step_start_time = time.time()
         if tokens_seen >= target_tokens:
             break
 
-    if ddp:
-        torch.distributed.barrier()
-    if rank == 0:
-        # Save the final model checkpoint in HF format along with model.py to load it.
-        out_dir = root / "models" / cfg.run_name
-        out_dir.mkdir(parents=True, exist_ok=True)
-        save_hf_checkpoint(unwrap_model(model), tokenizer, out_dir)
-        with (out_dir / "train_config.json").open("w", encoding="utf-8") as f:
-            json.dump(config_to_json(cfg), f, indent=2)
-        print(f"saved model to {out_dir}")
+    save_model(root / "models" / cfg.run_name)
     if wandb_run is not None:
         wandb_run.finish()
     if ddp:
